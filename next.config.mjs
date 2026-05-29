@@ -23,6 +23,10 @@ const nextConfig = {
   images: {
     unoptimized: true
   },
+  allowedDevOrigins: [
+    "chivalrously-atonal-kadence.ngrok-free.dev",
+    "*.ngrok-free.dev"
+  ],
   env: {},
   webpack: (config, { isServer }) => {
     // Ignore fs/path modules in browser bundle

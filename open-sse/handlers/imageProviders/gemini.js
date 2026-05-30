@@ -1,5 +1,5 @@
 // Google Gemini adapter (Nano Banana models)
-import { nowSec } from "./_base.js";
+import { nowSec, urlToBase64 } from "./_base.js";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
@@ -10,17 +10,35 @@ export default {
     return `${BASE_URL}/${modelId}:generateContent?key=${encodeURIComponent(apiKey)}`;
   },
   buildHeaders: () => ({ "Content-Type": "application/json" }),
-  buildBody: (_model, body) => {
+  buildBody: async (_model, body) => {
     const parts = [];
     if (body.prompt) parts.push({ text: body.prompt });
     
-    if (body.image && body.image.startsWith("data:")) {
-      const match = body.image.match(/^data:(image\/[^;]+);base64,(.+)$/);
-      if (match) {
+    if (body.image) {
+      let b64Data = "";
+      let mimeType = "image/jpeg";
+      
+      if (body.image.startsWith("data:")) {
+        const match = body.image.match(/^data:(image\/[^;]+);base64,(.+)$/);
+        if (match) {
+          mimeType = match[1];
+          b64Data = match[2];
+        }
+      } else if (body.image.startsWith("http")) {
+        try {
+          b64Data = await urlToBase64(body.image);
+          if (body.image.toLowerCase().includes(".png")) mimeType = "image/png";
+          else if (body.image.toLowerCase().includes(".webp")) mimeType = "image/webp";
+        } catch (e) {
+          console.error("Failed to fetch image URL for Gemini:", e);
+        }
+      }
+      
+      if (b64Data) {
         parts.push({
           inlineData: {
-            mimeType: match[1],
-            data: match[2]
+            mimeType,
+            data: b64Data
           }
         });
       }

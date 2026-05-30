@@ -1003,7 +1003,7 @@ function GenericExampleCard({ providerId, kind }) {
     [exConfig.bodyKey]: input,
     ...exConfig.extraBody,
     ...extraBodyFromFields,
-    ...(supportsEdit && effectiveRefImage ? { image: effectiveRefImage } : {}),
+    ...((supportsEdit || kind === "image") && effectiveRefImage ? { image: effectiveRefImage } : {}),
     ...(supportsMask && effectiveMaskImage ? { mask_image: effectiveMaskImage } : {}),
   };
 
@@ -1209,8 +1209,8 @@ function GenericExampleCard({ providerId, kind }) {
           </div>
         </Row>
 
-        {/* Reference image (only for edit-capable image models) */}
-        {supportsEdit && (
+        {/* Reference image (for edit-capable or all image models like Gemini) */}
+        {(supportsEdit || kind === "image") && (
           <Row label="Ref Image (URL)">
             <div className="flex flex-col gap-2">
               <div className="relative">

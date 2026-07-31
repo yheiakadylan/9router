@@ -223,10 +223,15 @@ async function getProviderModels(id) {
  * @returns {Promise<Object>} { success, data: { authUrl, codeVerifier, state, redirectUri } }
  */
 async function getOAuthAuthUrl(provider) {
-  // Codex requires fixed port 1455 and path /auth/callback
-  const redirectUri = provider === "codex" 
+  // Build redirect URI from current config so it works on any port / domain
+  const protocol = config.protocol || "http:";
+  const host = config.host || "localhost";
+  const port = config.port || 20128;
+  const origin = `${protocol}//${host}:${port}`;
+  // Codex requires a fixed port and specific path
+  const redirectUri = provider === "codex"
     ? "http://localhost:1455/auth/callback"
-    : "http://localhost:20128/callback";
+    : `${origin}/callback`;
   return makeRequest("GET", `/api/oauth/${provider}/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`);
 }
 

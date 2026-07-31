@@ -120,9 +120,7 @@ export default function Sidebar({ onClose }) {
         {/* Logo */}
         <div className="px-6 py-4 flex flex-col gap-2">
           <Link href="/dashboard" className="flex items-center gap-3">
-            <div className="flex items-center justify-center size-9 rounded-[10px] bg-gradient-to-br from-brand-500 to-brand-700 shadow-[var(--shadow-warm)]">
-              <span className="material-symbols-outlined text-white text-[20px]">hub</span>
-            </div>
+            <img src="/vikcom-logo-icon.png" alt="VIKCOM Proxy" className="size-9 rounded-[10px] object-contain shrink-0" />
             <div className="flex flex-col">
               <h1 className="text-lg font-semibold tracking-tight text-text-main">
                 {APP_CONFIG.name}
@@ -305,6 +303,23 @@ export default function Sidebar({ onClose }) {
               <span className="text-[13px] font-medium">Remote</span>
             </button>
 
+            {/* 9English */}
+            {/* <a
+              href="https://9english.net/"
+              target="_blank"
+              rel="noreferrer"
+              onClick={onClose}
+              className={cn(
+                "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group w-full",
+                "text-text-muted hover:bg-surface-2 hover:text-text-main"
+              )}
+            >
+              <span className="material-symbols-outlined text-[18px] group-hover:text-primary transition-colors">
+                translate
+              </span>
+              <span className="text-[13px] font-medium">9English</span>
+            </a> */}
+
             {/* Settings */}
             <Link
               href="/dashboard/profile"
@@ -339,7 +354,7 @@ export default function Sidebar({ onClose }) {
         isOpen={showUpdateModal}
         onClose={() => setShowUpdateModal(false)}
         onConfirm={handleUpdate}
-        title="Update 9Router"
+        title="Update VIKCOM Proxy"
         message={`Show install command for v${updateInfo?.latestVersion || ""}? You can copy it and shutdown to install manually.`}
         confirmText="Show Command"
         cancelText="Cancel"
@@ -390,7 +405,7 @@ function ManualUpdatePanel({ latestVersion, installCmd, copied, onCopyAndShutdow
           <span className="material-symbols-outlined text-[24px]">content_copy</span>
         </div>
         <div>
-          <h2 className="text-lg font-semibold">Update 9Router{latestVersion ? ` to v${latestVersion}` : ""}</h2>
+          <h2 className="text-lg font-semibold">Update VIKCOM Proxy{latestVersion ? ` to v${latestVersion}` : ""}</h2>
           <p className="text-xs text-white/60">
             {isDisconnected
               ? "Server stopped. Paste the command into a terminal to install."

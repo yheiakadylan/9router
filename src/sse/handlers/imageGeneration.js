@@ -6,6 +6,7 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
+import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
@@ -78,7 +79,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -86,14 +87,58 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey });
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId } = {}) {
+import { saveRequestDetail } from "@/lib/requestDetailsDb";
+
+function estimateImageTokens(body) {
+  const promptText = body?.prompt || "";
+  // ~1 token per 4 chars for text prompt (min 10 tokens)
+  const promptTextTokens = Math.max(10, Math.ceil(promptText.length / 4));
+  // ~1000 tokens per reference input image
+  const inputImagesCount = Array.isArray(body?.images) ? body.images.length : 0;
+  const inputImageTokens = inputImagesCount * 1000;
+  const prompt_tokens = promptTextTokens + inputImageTokens;
+
+  // Estimated output image completion tokens (~1024 tokens)
+  const completion_tokens = 1024;
+  const total_tokens = prompt_tokens + completion_tokens;
+
+  return { prompt_tokens, completion_tokens, total_tokens };
+}
+
+function sanitizeImagePayload(obj) {
+  if (!obj || typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) {
+    return obj.map((item) => sanitizeImagePayload(item));
+  }
+  const clean = {};
+  for (const [key, val] of Object.entries(obj)) {
+    if (typeof val === "string") {
+      if (val.startsWith("data:image/") || (key === "b64_json" && val.length > 200)) {
+        clean[key] = `[Base64 Image Data: ${val.length} chars]`;
+      } else if (val.length > 1000 && /^[A-Za-z0-9+/=]+$/.test(val.slice(0, 100))) {
+        clean[key] = `[Base64 Data: ${val.length} chars]`;
+      } else {
+        clean[key] = val;
+      }
+    } else if (typeof val === "object" && val !== null) {
+      clean[key] = sanitizeImagePayload(val);
+    } else {
+      clean[key] = val;
+    }
+  }
+  return clean;
+}
+
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey } = {}) {
+  const startTime = Date.now();
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
   const { provider, model } = modelInfo;
+  const estimatedTokens = estimateImageTokens(body);
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
@@ -103,7 +148,40 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       credentials: null,
       binaryOutput,
     });
-    if (result.success) return result.response;
+    const durationMs = Date.now() - startTime;
+    if (result.success) {
+      saveRequestUsage({
+        provider,
+        model,
+        connectionId: null,
+        apiKey: apiKey || null,
+        endpoint: "/v1/images/generations",
+        tokens: estimatedTokens,
+        status: "success",
+        durationMs,
+      }).catch(() => {});
+      saveRequestDetail({
+        provider,
+        model,
+        connectionId: null,
+        status: "success",
+        endpoint: "/v1/images/generations",
+        latency: { ttft: durationMs, total: durationMs },
+        request: sanitizeImagePayload(body),
+        response: sanitizeImagePayload(result.response),
+      }).catch(() => {});
+      return result.response;
+    }
+    saveRequestDetail({
+      provider,
+      model,
+      connectionId: null,
+      status: "error",
+      endpoint: "/v1/images/generations",
+      latency: { ttft: durationMs, total: durationMs },
+      request: sanitizeImagePayload(body),
+      response: { error: result.error },
+    }).catch(() => {});
     return errorResponse(result.status || HTTP_STATUS.BAD_GATEWAY, result.error || "Image generation failed");
   }
 
@@ -148,7 +226,42 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       }
     });
 
-    if (result.success) return withConnectionMetadata(result.response, credentials);
+    const durationMs = Date.now() - startTime;
+
+    if (result.success) {
+      saveRequestUsage({
+        provider,
+        model,
+        connectionId: credentials.connectionId,
+        apiKey: apiKey || null,
+        endpoint: "/v1/images/generations",
+        tokens: estimatedTokens,
+        status: "success",
+        durationMs,
+      }).catch(() => {});
+      saveRequestDetail({
+        provider,
+        model,
+        connectionId: credentials.connectionId,
+        status: "success",
+        endpoint: "/v1/images/generations",
+        latency: { ttft: durationMs, total: durationMs },
+        request: sanitizeImagePayload(body),
+        response: sanitizeImagePayload(result.response),
+      }).catch(() => {});
+      return withConnectionMetadata(result.response, credentials);
+    }
+
+    saveRequestDetail({
+      provider,
+      model,
+      connectionId: credentials.connectionId,
+      status: "error",
+      endpoint: "/v1/images/generations",
+      latency: { ttft: durationMs, total: durationMs },
+      request: sanitizeImagePayload(body),
+      response: { error: result.error },
+    }).catch(() => {});
 
     // Invalid client payloads are account-independent; do not rotate or lock credentials.
     if (result.retryable === false) return result.response;

@@ -4,11 +4,15 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
 
-// Keep providers without serviceKinds (default LLM) or with "llm" in serviceKinds
-function isLLMProvider(id) {
+function isImageProvider(id) {
   const p = AI_PROVIDERS[id];
-  if (!p?.serviceKinds) return true;
-  return p.serviceKinds.includes("llm");
+  if (p?.serviceKinds?.includes("image")) return true;
+  if (p?.imageConfig) return true;
+  const KNOWN_IMAGE_PROVIDERS = new Set([
+    "antigravity", "gemini", "codex", "sdwebui", "comfyui",
+    "cloudflare", "replicate", "fal", "siliconflow"
+  ]);
+  return KNOWN_IMAGE_PROVIDERS.has(id);
 }
 import Badge from "./Badge";
 import Card from "./Card";
@@ -40,39 +44,43 @@ function TimeAgo({ timestamp }) {
 }
 
 function RecentRequests({ requests = [] }) {
+  const imageRequests = requests.filter(r => r.endpoint === "/v1/images/generations" || /image|sdwebui|comfyui|flux|imagen/i.test(r.model || ""));
+  const displayRequests = imageRequests.length > 0 ? imageRequests : requests;
+
   return (
     <Card className="flex min-w-0 flex-col overflow-hidden" padding="sm" style={{ height: 480 }}>
       {/* Header */}
-      <div className="px-1 py-2 border-b border-border shrink-0">
-        <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
+      <div className="px-1 py-2 border-b border-border shrink-0 flex items-center justify-between">
+        <span className="text-xs font-semibold text-text-muted uppercase tracking-wide">Log Gen Ảnh Gần Đây</span>
+        <span className="text-[11px] text-text-muted">{displayRequests.length} lượt</span>
       </div>
 
-      {!requests.length ? (
-        <div className="flex-1 flex items-center justify-center text-text-muted text-sm">No requests yet.</div>
+      {!displayRequests.length ? (
+        <div className="flex-1 flex items-center justify-center text-text-muted text-sm">Chưa có request gen ảnh nào.</div>
       ) : (
         <div className="flex-1 overflow-y-auto">
           <table className="w-full min-w-[300px] border-collapse text-xs">
             <thead className="sticky top-0 bg-bg z-10">
               <tr className="border-b border-border">
                 <th className="py-1.5 text-left font-semibold text-text-muted w-2"></th>
-                <th className="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
-                <th className="py-1.5 text-right font-semibold text-text-muted">When</th>
+                <th className="py-1.5 text-left font-semibold text-text-muted">Model Gen Ảnh</th>
+                <th className="py-1.5 text-left font-semibold text-text-muted">Provider</th>
+                <th className="py-1.5 text-right font-semibold text-text-muted">Trạng Thái</th>
+                <th className="py-1.5 text-right font-semibold text-text-muted">Thời Gian</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
-              {requests.map((r, i) => {
+              {displayRequests.map((r, i) => {
                 const ok = !r.status || r.status === "ok" || r.status === "success";
                 return (
                   <tr key={i} className="hover:bg-bg-subtle transition-colors">
                     <td className="py-1.5">
                       <span className={`block w-1.5 h-1.5 rounded-full ${ok ? "bg-success" : "bg-error"}`} />
                     </td>
-                    <td className="py-1.5 font-mono truncate max-w-[120px]" title={r.model}>{r.model}</td>
-                    <td className="py-1.5 text-right whitespace-nowrap">
-                      <span className="text-primary">{fmt(r.promptTokens)}↑</span>
-                      {" "}
-                      <span className="text-success">{fmt(r.completionTokens)}↓</span>
+                    <td className="py-1.5 font-mono truncate max-w-[140px]" title={r.model}>{r.model}</td>
+                    <td className="py-1.5 text-text-muted truncate max-w-[90px]">{r.provider || "—"}</td>
+                    <td className="py-1.5 text-right font-medium">
+                      <span className={ok ? "text-success" : "text-error"}>{ok ? "Thành công" : "Lỗi"}</span>
                     </td>
                     <td className="py-1.5 text-right text-text-muted whitespace-nowrap"><TimeAgo timestamp={r.timestamp} /></td>
                   </tr>
@@ -162,9 +170,9 @@ const MODEL_COLUMNS = [
 ];
 
 const ACCOUNT_COLUMNS = [
+  { field: "accountName", label: "Account" },
   { field: "rawModel", label: "Model" },
   { field: "provider", label: "Provider" },
-  { field: "accountName", label: "Account" },
   { field: "requests", label: "Requests", align: "right" },
   { field: "lastUsed", label: "Last Used", align: "right" },
 ];
@@ -220,7 +228,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const setPeriod = setPeriodProp ?? setPeriodLocal;
 
   // Fetch connected providers once, deduplicate by provider type
-  // Always include noAuth free providers (e.g. opencode) regardless of connections
+  // Always include noAuth free providers regardless of connections
   useEffect(() => {
     Promise.all([
       fetch("/api/providers").then((r) => r.ok ? r.json() : null),
@@ -235,7 +243,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
         const seen = new Set();
         const unique = (d?.connections || []).filter((c) => {
           if (c.isActive === false) return false;
-          if (!isLLMProvider(c.provider)) return false;
+          if (!isImageProvider(c.provider)) return false;
           if (seen.has(c.provider)) return false;
           seen.add(c.provider);
           return true;
@@ -244,7 +252,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           nodeName: nodeNameMap[c.provider] || null,
         }));
         const noAuthProviders = Object.values(FREE_PROVIDERS)
-          .filter((p) => p.noAuth && !seen.has(p.id) && isLLMProvider(p.id))
+          .filter((p) => p.noAuth && !seen.has(p.id) && isImageProvider(p.id))
           .map((p) => ({ provider: p.id, name: p.name }));
         setProviders([...unique, ...noAuthProviders]);
       })
@@ -327,13 +335,22 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           groupedData: groupDataByKey(sortData(stats.byModel, pendingMap, sortBy, sortOrder), "rawModel"),
           storageKey: "usage-stats:expanded-models",
           emptyMessage: "No usage recorded yet.",
-          renderSummaryCells: (group) => (
-            <>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
-            </>
-          ),
+          renderSummaryCells: (group) => {
+            const providerName = group.items?.[0]?.provider || "—";
+            return (
+              <>
+                <td className="px-6 py-3">
+                  {providerName !== "—" ? (
+                    <Badge variant="neutral" size="sm">{providerName}</Badge>
+                  ) : (
+                    <span className="text-text-muted">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+                <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              </>
+            );
+          },
           renderDetailCells: (item) => (
             <>
               <td className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}>{item.rawModel}</td>
@@ -360,14 +377,24 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           groupedData: groupDataByKey(sortData(stats.byAccount, pendingMap, sortBy, sortOrder), "accountName"),
           storageKey: "usage-stats:expanded-accounts",
           emptyMessage: "No account-specific usage recorded yet.",
-          renderSummaryCells: (group) => (
-            <>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
-            </>
-          ),
+          renderSummaryCells: (group) => {
+            const modelName = group.items?.[0]?.rawModel || "—";
+            const providerName = group.items?.[0]?.provider || "—";
+            return (
+              <>
+                <td className="px-6 py-3 font-medium">{modelName}</td>
+                <td className="px-6 py-3">
+                  {providerName !== "—" ? (
+                    <Badge variant="neutral" size="sm">{providerName}</Badge>
+                  ) : (
+                    <span className="text-text-muted">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+                <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              </>
+            );
+          },
           renderDetailCells: (item) => (
             <>
               <td className={`px-6 py-3 font-medium transition-colors ${item.pending > 0 ? "text-primary" : ""}`}>{item.accountName || `Account ${item.connectionId?.slice(0, 8)}...`}</td>
@@ -385,14 +412,24 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           groupedData: groupDataByKey(sortData(stats.byApiKey, {}, sortBy, sortOrder), "keyName"),
           storageKey: "usage-stats:expanded-apikeys",
           emptyMessage: "No API key usage recorded yet.",
-          renderSummaryCells: (group) => (
-            <>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
-            </>
-          ),
+          renderSummaryCells: (group) => {
+            const modelName = group.items?.[0]?.rawModel || "—";
+            const providerName = group.items?.[0]?.provider || "—";
+            return (
+              <>
+                <td className="px-6 py-3 font-medium">{modelName}</td>
+                <td className="px-6 py-3">
+                  {providerName !== "—" ? (
+                    <Badge variant="neutral" size="sm">{providerName}</Badge>
+                  ) : (
+                    <span className="text-text-muted">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+                <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              </>
+            );
+          },
           renderDetailCells: (item) => (
             <>
               <td className="px-6 py-3 font-medium">{item.keyName}</td>
@@ -411,14 +448,24 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           groupedData: groupDataByKey(sortData(stats.byEndpoint, {}, sortBy, sortOrder), "endpoint"),
           storageKey: "usage-stats:expanded-endpoints",
           emptyMessage: "No endpoint usage recorded yet.",
-          renderSummaryCells: (group) => (
-            <>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-text-muted">—</td>
-              <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
-              <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
-            </>
-          ),
+          renderSummaryCells: (group) => {
+            const modelName = group.items?.[0]?.rawModel || "—";
+            const providerName = group.items?.[0]?.provider || "—";
+            return (
+              <>
+                <td className="px-6 py-3 font-medium">{modelName}</td>
+                <td className="px-6 py-3">
+                  {providerName !== "—" ? (
+                    <Badge variant="neutral" size="sm">{providerName}</Badge>
+                  ) : (
+                    <span className="text-text-muted">—</span>
+                  )}
+                </td>
+                <td className="px-6 py-3 text-right">{fmt(group.summary.requests)}</td>
+                <td className="px-6 py-3 text-right text-text-muted whitespace-nowrap">{fmtTime(group.summary.lastUsed)}</td>
+              </>
+            );
+          },
           renderDetailCells: (item) => (
             <>
               <td className="px-6 py-3 font-medium font-mono text-sm">{item.endpoint}</td>
@@ -432,6 +479,67 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       }
     }
   }, [stats, tableView, sortBy, sortOrder]);
+
+  const imageStats = useMemo(() => {
+    if (!stats) return null;
+
+    const isImageItem = (key, item) => {
+      if (item?.endpoint === "/v1/images/generations") return true;
+      const k = String(key || "").toLowerCase();
+      const m = String(item?.rawModel || item?.model || "").toLowerCase();
+      return k.includes("/v1/images/generations") || m.includes("image") || m.includes("flux") || m.includes("imagen") || m.includes("sdwebui") || m.includes("comfyui");
+    };
+
+    const filterObj = (obj) => {
+      if (!obj) return {};
+      const res = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (isImageItem(k, v)) res[k] = v;
+      }
+      return res;
+    };
+
+    const byModel = filterObj(stats.byModel);
+    const byAccount = filterObj(stats.byAccount);
+    const byApiKey = filterObj(stats.byApiKey);
+    const byEndpoint = filterObj(stats.byEndpoint);
+
+    let totalImageRequests = 0;
+    for (const v of Object.values(byModel)) {
+      totalImageRequests += v.requests || 0;
+    }
+    if (totalImageRequests === 0 && stats.byEndpoint?.["/v1/images/generations"]) {
+      totalImageRequests = stats.byEndpoint["/v1/images/generations"].requests || 0;
+    }
+
+    const imageModelsCount = Object.keys(byModel).length;
+    const imageProvidersCount = new Set(Object.values(byModel).map((m) => m.provider).filter(Boolean)).size;
+
+    let totalMs = 0;
+    let countMs = 0;
+    for (const r of (stats.recentRequests || [])) {
+      const dur = r.durationMs || r.latency?.total;
+      if (dur > 0) {
+        totalMs += dur;
+        countMs++;
+      }
+    }
+    const avgDurationStr = countMs > 0 ? `${(totalMs / countMs / 1000).toFixed(1)}s` : "—";
+
+    return {
+      ...stats,
+      totalImageRequests,
+      imageModelsCount,
+      imageProvidersCount,
+      avgDurationStr,
+      byModel: Object.keys(byModel).length > 0 ? byModel : stats.byModel,
+      byAccount: Object.keys(byAccount).length > 0 ? byAccount : stats.byAccount,
+      byApiKey: Object.keys(byApiKey).length > 0 ? byApiKey : stats.byApiKey,
+      byEndpoint: Object.keys(byEndpoint).length > 0 ? byEndpoint : stats.byEndpoint,
+    };
+  }, [stats]);
+
+  const statsToUse = imageStats || stats;
 
   if (!stats && !loading) return <div className="text-text-muted">Failed to load usage statistics.</div>;
 
@@ -465,23 +573,20 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       )}
 
       {/* Overview cards */}
-      {loading ? spinner : <OverviewCards stats={stats} />}
+      {loading ? spinner : <OverviewCards stats={statsToUse} />}
 
       {/* Provider topology + Recent Requests */}
       {loading ? spinner : (
         <div className="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
           <ProviderTopology
             providers={providers}
-            activeRequests={stats.activeRequests || []}
-            lastProvider={stats.recentRequests?.[0]?.provider || ""}
-            errorProvider={stats.errorProvider || ""}
+            activeRequests={statsToUse.activeRequests || []}
+            lastProvider={statsToUse.recentRequests?.[0]?.provider || ""}
+            errorProvider={statsToUse.errorProvider || ""}
           />
-          <RecentRequests requests={stats.recentRequests || []} />
+          <RecentRequests requests={statsToUse.recentRequests || []} />
         </div>
       )}
-
-      {/* Token / Cost chart - sync period */}
-      {loading ? spinner : <UsageChart period={period} />}
 
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
@@ -496,20 +601,6 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
               <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
-          <div className="grid grid-cols-2 items-center gap-1 rounded-lg border border-border bg-bg-subtle p-1 sm:flex">
-            <button
-              onClick={() => setViewMode("costs")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "costs" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Costs
-            </button>
-            <button
-              onClick={() => setViewMode("tokens")}
-              className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${viewMode === "tokens" ? "bg-primary text-white shadow-sm" : "text-text-muted hover:text-text hover:bg-bg-hover"}`}
-            >
-              Tokens
-            </button>
-          </div>
         </div>
         {loading ? spinner : activeTableConfig && (
           <UsageTable
@@ -520,7 +611,8 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
             sortBy={sortBy}
             sortOrder={sortOrder}
             onToggleSort={toggleSort}
-            viewMode={viewMode}
+            viewMode="none"
+            hideTokenColumns={true}
             storageKey={activeTableConfig.storageKey}
             renderSummaryCells={activeTableConfig.renderSummaryCells}
             renderDetailCells={activeTableConfig.renderDetailCells}

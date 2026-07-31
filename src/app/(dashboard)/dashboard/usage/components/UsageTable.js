@@ -31,7 +31,10 @@ SortIcon.propTypes = {
 /**
  * Render 3 token or cost cells based on viewMode
  */
-function ValueCells({ item, viewMode, isSummary = false }) {
+function ValueCells({ item, viewMode, isSummary = false, hideTokenColumns = false }) {
+  if (viewMode === "none" || hideTokenColumns) {
+    return null;
+  }
   if (viewMode === "tokens") {
     return (
       <>
@@ -105,6 +108,7 @@ export default function UsageTable({
   renderDetailCells,
   renderSummaryCells,
   emptyMessage,
+  hideTokenColumns = false,
 }) {
   const [expanded, setExpanded] = useState(new Set());
 
@@ -136,6 +140,9 @@ export default function UsageTable({
   }, []);
 
   const valueColumns = useMemo(() => {
+    if (viewMode === "none" || hideTokenColumns) {
+      return [];
+    }
     if (viewMode === "tokens") {
       return [
         { field: "promptTokens", label: "Input Tokens" },
@@ -150,7 +157,7 @@ export default function UsageTable({
       { field: "completionTokens", label: "Output Cost" },
       { field: "cost", label: "Total Cost" },
     ];
-  }, [viewMode]);
+  }, [viewMode, hideTokenColumns]);
 
   const totalColSpan = columns.length + valueColumns.length;
 
@@ -204,7 +211,7 @@ export default function UsageTable({
                     </div>
                   </td>
                   {renderSummaryCells(group)}
-                  <ValueCells item={group.summary} viewMode={viewMode} isSummary />
+                  <ValueCells item={group.summary} viewMode={viewMode} isSummary hideTokenColumns={hideTokenColumns} />
                 </tr>
                 {/* Detail rows */}
                 {expanded.has(group.groupKey) && group.items.map((item) => (
@@ -213,7 +220,7 @@ export default function UsageTable({
                     className="group-detail hover:bg-bg-subtle/20 transition-colors"
                   >
                     {renderDetailCells(item)}
-                    <ValueCells item={item} viewMode={viewMode} />
+                    <ValueCells item={item} viewMode={viewMode} hideTokenColumns={hideTokenColumns} />
                   </tr>
                 ))}
               </Fragment>

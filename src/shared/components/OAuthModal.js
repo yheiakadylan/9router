@@ -57,13 +57,16 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
 
-  // Detect if running on localhost (client-side only)
+  // Detect if running on localhost (client-side only) & pre-fill callback URL
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsLocalhost(
         window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
       );
       setPlaceholderUrl(`${window.location.origin}/callback?code=...`);
+      // Pre-fill the callback URL so Step 2 is ready to submit right away
+      // (user just needs to click Connect — no manual copy-paste required)
+      setCallbackUrl(`${window.location.origin}/callback`);
     }
   }, []);
 
@@ -300,7 +303,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
       } else {
-        redirectUri = `http://localhost:${appPort}/callback`;
+        redirectUri = `${window.location.origin}/callback`;
       }
 
       // Build authorize URL first to get codeVerifier/state for codex server-side mode
@@ -802,12 +805,26 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                       ? "After authorization, copy the full callback URL or token from your browser."
                     : "After authorization, copy the full URL from your browser."}
                 </p>
-                <Input
-                  value={callbackUrl}
-                  onChange={(e) => setCallbackUrl(e.target.value)}
-                  placeholder={manualPlaceholder}
-                  className="font-mono text-xs"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    value={callbackUrl}
+                    onChange={(e) => setCallbackUrl(e.target.value)}
+                    placeholder={manualPlaceholder}
+                    className="flex-1 font-mono text-xs"
+                  />
+                  <Button
+                    variant="secondary"
+                    icon="auto_fix_high"
+                    title={`Auto-fill: ${typeof window !== "undefined" ? window.location.origin : ""}/callback`}
+                    onClick={() => {
+                      if (typeof window !== "undefined") {
+                        setCallbackUrl(`${window.location.origin}/callback`);
+                      }
+                    }}
+                  >
+                    Auto-fill
+                  </Button>
+                </div>
               </div>
             </div>
 

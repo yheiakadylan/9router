@@ -31,6 +31,10 @@ vi.mock("@/shared/constants/providers.js", () => ({
   FREE_PROVIDERS: {},
 }));
 
+vi.mock("@/shared/utils/connectionPriority.js", () => (
+  import("../../src/shared/utils/connectionPriority.js")
+));
+
 vi.mock("../../src/sse/services/quotaNotifier.js", () => ({
   shouldNotifyAccountError: mocks.shouldNotifyAccountError,
   notifyAccountError: mocks.notifyAccountError,
@@ -173,5 +177,25 @@ describe("Antigravity account cooldown selection", () => {
         hasError: false,
       }],
     })));
+  });
+
+  it("does not notify again while the account is still unavailable", async () => {
+    const failed = {
+      ...account("failed", 1, new Date(Date.now() - 1000).toISOString()),
+      testStatus: "unavailable",
+      lastError: "token revoked",
+    };
+    mocks.getProviderConnections.mockResolvedValue([failed]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await markAccountUnavailable(
+      failed.id,
+      401,
+      "token revoked",
+      "antigravity",
+      "gemini-3.1-flash-image"
+    );
+
+    expect(mocks.notifyAccountError).not.toHaveBeenCalled();
   });
 });

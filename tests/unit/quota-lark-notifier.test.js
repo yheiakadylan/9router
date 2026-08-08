@@ -16,6 +16,7 @@ describe("Lark quota notifier", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     global.fetch = originalFetch;
     if (originalWebhook === undefined) delete process.env.LARK_QUOTA_WEBHOOK_URL;
     else process.env.LARK_QUOTA_WEBHOOK_URL = originalWebhook;
@@ -60,6 +61,27 @@ describe("Lark quota notifier", () => {
     expect(body.content.text).toContain("codex / ready@example.com");
     expect(body.content.text).toContain("quota: 42% (weekly)");
     expect(body.content.text).not.toContain("empty@example.com");
+  });
+
+  it("deduplicates an account across models for at least five minutes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-08T04:55:00.000Z"));
+    const notification = {
+      connectionId: "codex-account-dedupe-test",
+      provider: "codex",
+      status: 401,
+      errorText: "token revoked",
+      resetAt: new Date(Date.now() + 2 * 60_000).toISOString(),
+      cooldownMs: 2 * 60_000,
+    };
+
+    expect(await notifyAccountError({ ...notification, model: "gpt-image-2" })).toEqual({ sent: true });
+    vi.advanceTimersByTime(3 * 60_000);
+    expect(await notifyAccountError({ ...notification, model: "gpt-5.6-sol" })).toEqual({
+      sent: false,
+      reason: "deduped",
+    });
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("uses the built-in webhook when no environment override exists", async () => {

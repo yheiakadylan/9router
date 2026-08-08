@@ -85,10 +85,12 @@ export async function notifyAccountError({
 
   const now = Date.now();
   const resetMs = resetAt ? new Date(resetAt).getTime() : NaN;
-  const dedupeUntil = Number.isFinite(resetMs) && resetMs > now
-    ? resetMs
-    : now + Math.max(cooldownMs, DEFAULT_DEDUPE_MS);
-  const dedupeKey = `${connectionId}:${model || "__all"}`;
+  const dedupeUntil = now + Math.max(
+    DEFAULT_DEDUPE_MS,
+    cooldownMs,
+    Number.isFinite(resetMs) ? resetMs - now : 0
+  );
+  const dedupeKey = connectionId;
   if ((state.sentUntil.get(dedupeKey) || 0) > now) {
     return { sent: false, reason: "deduped" };
   }

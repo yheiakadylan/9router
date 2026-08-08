@@ -279,7 +279,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockUpdate = preciseResetAtMs
     ? { [getModelLockKey(lockModel)]: new Date(preciseResetAtMs).toISOString() }
     : buildModelLockUpdate(lockModel, cooldownMs);
-  const wasAlreadyLocked = isModelLockActive(conn, lockModel);
+  const wasAlreadyUnavailable = conn?.testStatus === "unavailable" || isModelLockActive(conn, lockModel);
   const modelErrorUpdate = {
     [getModelErrorKey(lockModel)]: reason,
     [getModelErrorCodeKey(lockModel)]: status,
@@ -306,7 +306,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
 
-  if (!wasAlreadyLocked && shouldNotifyAccountError({ status })) {
+  if (!wasAlreadyUnavailable && shouldNotifyAccountError({ status })) {
     const remainingConnections = connections.filter((candidate) => (
       candidate.id !== connectionId
       && candidate.isActive === true

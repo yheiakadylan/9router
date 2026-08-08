@@ -8,7 +8,7 @@ on:
 
 concurrency:
   group: production-ec2
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
   IMAGE_NAME: ghcr.io/yheiakadylan/9router
@@ -16,6 +16,7 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write

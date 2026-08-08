@@ -94,10 +94,15 @@ async function parseStream(response, log, callbacks = {}) {
   let lastEvent = null;
   let bytesReceived = 0;
   let lastProgressLogMs = 0;
+  let firstChunkAt = null;
 
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+    if (!firstChunkAt) {
+      firstChunkAt = Date.now();
+      callbacks.onFirstChunk?.(firstChunkAt);
+    }
     bytesReceived += value?.byteLength || 0;
     buffer += decoder.decode(value, { stream: true });
 
@@ -149,26 +154,40 @@ async function parseStream(response, log, callbacks = {}) {
 }
 
 // SSE Response that pipes codex progress + partial + done events to client
-function buildSseResponse(providerResponse, log, onSuccess) {
+function buildSseResponse(providerResponse, log, onSuccess, onComplete) {
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
+      let firstChunkAt = null;
       const send = (event, data) => {
         controller.enqueue(enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
+      const notifyComplete = (result) => {
+        try {
+          Promise.resolve(onComplete?.(result)).catch(() => {});
+        } catch {}
+      };
       try {
         const b64 = await parseStream(providerResponse, log, {
+          onFirstChunk: (timestamp) => { firstChunkAt = timestamp; },
           onProgress: (info) => send("progress", info),
           onPartialImage: (info) => send("partial_image", info),
         });
+        const completedAt = Date.now();
         if (!b64) {
-          send("error", { message: "Codex did not return an image. Account may not be entitled (Plus/Pro required)." });
+          const message = "Codex did not return an image. Account may not be entitled (Plus/Pro required).";
+          send("error", { message });
+          notifyComplete({ success: false, error: message, firstChunkAt, completedAt });
         } else {
           if (onSuccess) await onSuccess();
-          send("done", { created: nowSec(), data: [{ b64_json: b64 }] });
+          const response = { created: nowSec(), data: [{ b64_json: b64 }] };
+          send("done", response);
+          notifyComplete({ success: true, response, firstChunkAt, completedAt });
         }
       } catch (err) {
-        send("error", { message: err?.message || "Stream failed" });
+        const message = err?.message || "Stream failed";
+        send("error", { message });
+        notifyComplete({ success: false, error: message, firstChunkAt, completedAt: Date.now() });
       } finally {
         controller.close();
       }
@@ -238,9 +257,9 @@ export default {
     };
   },
   // Custom: codex parses SSE → either pipe to client or collect b64
-  async parseResponse(response, { log, streamToClient, onRequestSuccess }) {
+  async parseResponse(response, { log, streamToClient, onRequestSuccess, onStreamComplete }) {
     if (streamToClient) {
-      return { sseResponse: buildSseResponse(response, log, onRequestSuccess) };
+      return { sseResponse: buildSseResponse(response, log, onRequestSuccess, onStreamComplete) };
     }
     const b64 = await parseStream(response, log);
     if (!b64) {

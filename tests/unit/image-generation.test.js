@@ -375,6 +375,49 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
   });
 
+  it("reports Codex streaming completion only after the final image event", async () => {
+    let finishUpstream;
+    const upstream = new ReadableStream({
+      start(controller) {
+        finishUpstream = () => {
+          controller.enqueue(new TextEncoder().encode([
+            "event: response.output_item.done",
+            'data: {"item":{"type":"image_generation_call","result":"base64streamimage"}}',
+            "",
+            "",
+          ].join("\n")));
+          controller.close();
+        };
+      },
+    });
+    global.fetch.mockResolvedValueOnce(
+      new Response(upstream, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+    );
+    const onStreamComplete = vi.fn();
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "A streamed green square" },
+      modelInfo: { provider: "codex", model: "gpt-5.5-image" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      streamToClient: true,
+      onStreamComplete,
+    });
+
+    expect(result.streamed).toBe(true);
+    expect(onStreamComplete).not.toHaveBeenCalled();
+
+    finishUpstream();
+    const responseText = await result.response.text();
+
+    expect(responseText).toContain("event: done");
+    expect(onStreamComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      response: expect.objectContaining({ data: [{ b64_json: "base64streamimage" }] }),
+      firstChunkAt: expect.any(Number),
+      completedAt: expect.any(Number),
+    }));
+  });
+
   it("routes GPT Image 2 through the Codex image tool model", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(

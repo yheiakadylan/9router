@@ -8,6 +8,9 @@ import {
   isAntigravityValidationRequired,
 } from "open-sse/services/antigravityRuntime.js";
 import { resolveProviderId, FREE_PROVIDERS } from "@/shared/constants/providers.js";
+import { isConnectionPriorityAvailable, sortConnectionsForPriority } from "@/shared/utils/connectionPriority.js";
+import { getUsageForProvider } from "open-sse/services/usage.js";
+import { notifyAccountError, shouldNotifyAccountError, summarizeQuotaPercent } from "./quotaNotifier.js";
 import * as log from "../utils/logger.js";
 
 // Mutex to prevent race conditions during account selection
@@ -20,6 +23,28 @@ function githubMonthlyResetMs(status, errorText, provider) {
   if (!String(errorText || "").toLowerCase().includes(GITHUB_MONTHLY_USAGE_LIMIT)) return null;
   const now = new Date();
   return Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1);
+}
+
+async function getConnectionQuotaSummary(connection, model) {
+  let timeoutId;
+  try {
+    const proxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
+    const usage = await Promise.race([
+      getUsageForProvider(connection, {
+        connectionProxyEnabled: proxy.connectionProxyEnabled === true,
+        connectionProxyUrl: proxy.connectionProxyUrl || "",
+        connectionNoProxy: proxy.connectionNoProxy || "",
+        vercelRelayUrl: proxy.vercelRelayUrl || "",
+        strictProxy: false,
+      }),
+      new Promise((resolve) => { timeoutId = setTimeout(() => resolve(null), 5_000); }),
+    ]);
+    return summarizeQuotaPercent(usage, connection.provider, model);
+  } catch {
+    return "unknown";
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
@@ -173,8 +198,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
         });
       }
     } else {
-      // Default: fill-first (already sorted by priority in getProviderConnections)
-      connection = availableConnections[0];
+      // When no model is known, demote accounts with any active model cooldown.
+      connection = sortConnectionsForPriority(availableConnections, { model })[0];
     }
 
     const resolvedProxy = await resolveConnectionProxyConfig(connection.providerSpecificData || {});
@@ -254,6 +279,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockUpdate = preciseResetAtMs
     ? { [getModelLockKey(lockModel)]: new Date(preciseResetAtMs).toISOString() }
     : buildModelLockUpdate(lockModel, cooldownMs);
+  const wasAlreadyLocked = isModelLockActive(conn, lockModel);
   const modelErrorUpdate = {
     [getModelErrorKey(lockModel)]: reason,
     [getModelErrorCodeKey(lockModel)]: status,
@@ -279,6 +305,37 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   const lockKey = Object.keys(lockUpdate)[0];
   const connName = conn?.displayName || conn?.name || conn?.email || connectionId.slice(0, 8);
   log.warn("AUTH", `${connName} locked ${lockKey} for ${Math.round(cooldownMs / 1000)}s [${status}]`);
+
+  if (!wasAlreadyLocked && shouldNotifyAccountError({ status })) {
+    const remainingConnections = connections.filter((candidate) => (
+      candidate.id !== connectionId
+      && candidate.isActive === true
+      && isConnectionPriorityAvailable(candidate, { model: lockModel })
+    ));
+    const quotaLookups = remainingConnections.map(async (candidate) => {
+      const quotaSummary = await getConnectionQuotaSummary(candidate, lockModel);
+      return {
+        id: candidate.id,
+        provider: candidate.provider || provider,
+        name: candidate.displayName || candidate.name || candidate.email || candidate.id.slice(0, 8),
+        quotaSummary,
+        hasError: candidate.testStatus === "unavailable" || !!candidate.lastError,
+      };
+    });
+    Promise.all(quotaLookups).then((remainingAccounts) => notifyAccountError({
+      connectionId,
+      accountName: connName,
+      provider,
+      model: lockModel,
+      status,
+      errorText: reason,
+      resetAt: lockUpdate[lockKey],
+      cooldownMs,
+      remainingAccounts,
+    })).catch((error) => {
+      log.warn("NOTIFY", `Lark error notification failed: ${error.message}`);
+    });
+  }
 
   if (provider && status && reason) {
     console.error(`❌ ${provider} [${status}]: ${reason}`);

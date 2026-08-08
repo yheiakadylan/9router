@@ -8,6 +8,9 @@ const mocks = vi.hoisted(() => ({
   getProxyPools: vi.fn(),
   resolveConnectionProxyConfig: vi.fn(),
   pickProxyPoolId: vi.fn(),
+  shouldNotifyAccountError: vi.fn(),
+  notifyAccountError: vi.fn(),
+  getUsageForProvider: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -26,6 +29,16 @@ vi.mock("@/lib/network/connectionProxy", () => ({
 vi.mock("@/shared/constants/providers.js", () => ({
   resolveProviderId: (provider) => provider,
   FREE_PROVIDERS: {},
+}));
+
+vi.mock("../../src/sse/services/quotaNotifier.js", () => ({
+  shouldNotifyAccountError: mocks.shouldNotifyAccountError,
+  notifyAccountError: mocks.notifyAccountError,
+  summarizeQuotaPercent: (usage) => usage?.summary || "unknown",
+}));
+
+vi.mock("open-sse/services/usage.js", () => ({
+  getUsageForProvider: mocks.getUsageForProvider,
 }));
 
 vi.mock("../../src/sse/utils/logger.js", () => ({
@@ -61,6 +74,9 @@ describe("Antigravity account cooldown selection", () => {
       proxyPoolId: null,
       vercelRelayUrl: "",
     });
+    mocks.shouldNotifyAccountError.mockReturnValue(true);
+    mocks.notifyAccountError.mockResolvedValue({ sent: true });
+    mocks.getUsageForProvider.mockResolvedValue({ summary: "73% (session)" });
   });
 
   it("does not call a rate-limited account again until its model reset time", async () => {
@@ -76,6 +92,16 @@ describe("Antigravity account cooldown selection", () => {
 
     expect(credentials.connectionId).toBe("ready");
     expect(credentials.accessToken).toBe("ready-token");
+  });
+
+  it("demotes an account with any active quota lock when the caller has no model", async () => {
+    const locked = account("limited", 1, new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString());
+    const fallback = account("ready", 2);
+    mocks.getProviderConnections.mockResolvedValue([locked, fallback]);
+
+    const credentials = await getProviderCredentials("antigravity");
+
+    expect(credentials.connectionId).toBe("ready");
   });
 
   it("returns the account to the pool automatically after the reset time", async () => {
@@ -113,5 +139,39 @@ describe("Antigravity account cooldown selection", () => {
         "modelLock_gemini-3.1-flash-image": new Date(resetAtMs).toISOString(),
       })
     );
+    await vi.waitFor(() => expect(mocks.notifyAccountError).toHaveBeenCalledWith(expect.objectContaining({
+      connectionId: "limited",
+      provider: "antigravity",
+      model: "gemini-3.1-flash-image",
+      resetAt: new Date(resetAtMs).toISOString(),
+      remainingAccounts: [],
+    })));
+  });
+
+  it("lists only active accounts that are still usable", async () => {
+    const failed = account("failed", 1);
+    const ready = account("ready", 2);
+    const disabled = { ...account("disabled", 3), isActive: false };
+    const locked = account("locked", 4, new Date(Date.now() + 60_000).toISOString());
+    mocks.getProviderConnections.mockResolvedValue([failed, ready, disabled, locked]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await markAccountUnavailable(
+      failed.id,
+      500,
+      "upstream failed",
+      "antigravity",
+      "gemini-3.1-flash-image"
+    );
+
+    await vi.waitFor(() => expect(mocks.notifyAccountError).toHaveBeenCalledWith(expect.objectContaining({
+      remainingAccounts: [{
+        id: "ready",
+        provider: "antigravity",
+        name: "ready@example.com",
+        quotaSummary: "73% (session)",
+        hasError: false,
+      }],
+    })));
   });
 });

@@ -24,6 +24,7 @@ function serializeRequestBody(requestBody) {
  * @param {boolean} [options.binaryOutput] - Return raw image bytes
  * @param {function} [options.onCredentialsRefreshed]
  * @param {function} [options.onRequestSuccess]
+ * @param {function} [options.onStreamComplete]
  * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string }>}
  */
 export async function handleImageGenerationCore({
@@ -35,6 +36,7 @@ export async function handleImageGenerationCore({
   binaryOutput = false,
   onCredentialsRefreshed,
   onRequestSuccess,
+  onStreamComplete,
 }) {
   const { provider, model } = modelInfo;
 
@@ -177,6 +179,7 @@ export async function handleImageGenerationCore({
         log,
         streamToClient,
         onRequestSuccess,
+        onStreamComplete,
         url,
         requestBody,
         model,
@@ -184,7 +187,7 @@ export async function handleImageGenerationCore({
       });
       // Codex streaming case: returns an SSE Response directly
       if (parsed?.sseResponse) {
-        return { success: true, response: parsed.sseResponse };
+        return { success: true, response: parsed.sseResponse, streamed: true };
       }
     } else {
       parsed = await providerResponse.json();

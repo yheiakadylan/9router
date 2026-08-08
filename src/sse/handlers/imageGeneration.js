@@ -223,8 +223,41 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
-      }
+      },
+      onStreamComplete: ({ success, response, error, firstChunkAt, completedAt }) => {
+        const finishedAt = completedAt || Date.now();
+        const durationMs = finishedAt - startTime;
+        const ttftMs = firstChunkAt ? firstChunkAt - startTime : durationMs;
+
+        if (success) {
+          saveRequestUsage({
+            provider,
+            model,
+            connectionId: credentials.connectionId,
+            apiKey: apiKey || null,
+            endpoint: "/v1/images/generations",
+            tokens: estimatedTokens,
+            status: "success",
+            durationMs,
+          }).catch(() => {});
+        }
+
+        saveRequestDetail({
+          provider,
+          model,
+          connectionId: credentials.connectionId,
+          status: success ? "success" : "error",
+          endpoint: "/v1/images/generations",
+          latency: { ttft: ttftMs, total: durationMs },
+          request: sanitizeImagePayload(body),
+          response: success ? sanitizeImagePayload(response) : { error },
+        }).catch(() => {});
+      },
     });
+
+    if (result.streamed) {
+      return withConnectionMetadata(result.response, credentials);
+    }
 
     const durationMs = Date.now() - startTime;
 

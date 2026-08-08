@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   getProviderCredentials: vi.fn(),
@@ -12,6 +12,8 @@ const mocks = vi.hoisted(() => ({
   handleImageGenerationCore: vi.fn(),
   updateProviderCredentials: vi.fn(),
   checkAndRefreshToken: vi.fn(),
+  saveRequestUsage: vi.fn(),
+  saveRequestDetail: vi.fn(),
 }));
 
 vi.mock("../../src/sse/services/auth.js", () => ({
@@ -40,6 +42,14 @@ vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
   checkAndRefreshToken: mocks.checkAndRefreshToken,
 }));
 
+vi.mock("@/lib/usageDb.js", () => ({
+  saveRequestUsage: mocks.saveRequestUsage,
+}));
+
+vi.mock("@/lib/requestDetailsDb", () => ({
+  saveRequestDetail: mocks.saveRequestDetail,
+}));
+
 const { handleImageGeneration } = await import("../../src/sse/handlers/imageGeneration.js");
 
 describe("image generation account fallback", () => {
@@ -52,6 +62,12 @@ describe("image generation account fallback", () => {
       model: "gemini-3.1-flash-image",
     });
     mocks.checkAndRefreshToken.mockImplementation(async (_provider, credentials) => credentials);
+    mocks.saveRequestUsage.mockResolvedValue(undefined);
+    mocks.saveRequestDetail.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("switches to the next Antigravity account after an exact runtime quota limit", async () => {
@@ -132,5 +148,53 @@ describe("image generation account fallback", () => {
     expect(response.status).toBe(400);
     expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("records Codex stream duration when the final image arrives", async () => {
+    let now = 1_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const account = { connectionId: "codex-stream", accessToken: "token" };
+    let completeStream;
+    mocks.getModelInfo.mockResolvedValue({ provider: "codex", model: "gpt-5.5-image" });
+    mocks.getProviderCredentials.mockResolvedValueOnce(account);
+    mocks.handleImageGenerationCore.mockImplementationOnce(async (options) => {
+      completeStream = options.onStreamComplete;
+      return {
+        success: true,
+        streamed: true,
+        response: new Response("stream", { headers: { "Content-Type": "text/event-stream" } }),
+      };
+    });
+
+    const response = await handleImageGeneration(new Request("http://router.test/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify({
+        model: "codex/gpt-5.5-image",
+        prompt: "Generate a slow image",
+      }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.saveRequestUsage).not.toHaveBeenCalled();
+
+    now = 81_000;
+    completeStream({
+      success: true,
+      response: { created: 1, data: [{ b64_json: "generated" }] },
+      firstChunkAt: 5_000,
+      completedAt: now,
+    });
+
+    expect(mocks.saveRequestUsage).toHaveBeenCalledWith(expect.objectContaining({
+      provider: "codex",
+      model: "gpt-5.5-image",
+      durationMs: 80_000,
+      status: "success",
+    }));
+    expect(mocks.saveRequestDetail).toHaveBeenCalledWith(expect.objectContaining({
+      status: "success",
+      latency: { ttft: 4_000, total: 80_000 },
+    }));
   });
 });

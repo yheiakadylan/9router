@@ -265,7 +265,9 @@ export function startCodexProxy(appPort) {
       stopCodexProxy();
     });
 
-    server.listen(CODEX_PORT, "127.0.0.1", () => {
+    // Match the registered redirect host. Windows commonly resolves localhost
+    // to ::1 first, so binding only 127.0.0.1 misses the callback.
+    server.listen(CODEX_PORT, "localhost", () => {
       codexProxyServer = server;
       codexProxyTimeout = setTimeout(() => stopCodexProxy(), CODEX_PROXY_TIMEOUT_MS);
       resolve({ success: true });

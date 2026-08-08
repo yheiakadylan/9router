@@ -57,16 +57,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const [placeholderUrl, setPlaceholderUrl] = useState("/callback?code=...");
   const callbackProcessedRef = useRef(false);
 
-  // Detect if running on localhost (client-side only) & pre-fill callback URL
+  // Detect if running on localhost (client-side only).
   useEffect(() => {
     if (typeof window !== "undefined") {
       setIsLocalhost(
         window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
       );
       setPlaceholderUrl(`${window.location.origin}/callback?code=...`);
-      // Pre-fill the callback URL so Step 2 is ready to submit right away
-      // (user just needs to click Connect — no manual copy-paste required)
-      setCallbackUrl(`${window.location.origin}/callback`);
     }
   }, []);
 
@@ -505,6 +502,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
       const { code, token, state, error: callbackError, errorDescription } = data;
 
+      if (data.fullUrl) setCallbackUrl(data.fullUrl);
+
       if (callbackError) {
         callbackProcessedRef.current = true;
         setError(errorDescription || callbackError);
@@ -678,6 +677,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
   const manualPlaceholder = isXaiProvider
     ? "http://127.0.0.1:56121/callback?code=... or copied code"
+    : provider === "codex"
+      ? "http://localhost:1455/auth/callback?code=...&state=..."
     : isKimchiProvider
       ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
       : placeholderUrl;
@@ -813,15 +814,20 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                   />
                   <Button
                     variant="secondary"
-                    icon="auto_fix_high"
-                    title={`Auto-fill: ${typeof window !== "undefined" ? window.location.origin : ""}/callback`}
-                    onClick={() => {
-                      if (typeof window !== "undefined") {
-                        setCallbackUrl(`${window.location.origin}/callback`);
+                    icon="content_paste"
+                    title="Paste callback URL from clipboard"
+                    onClick={async () => {
+                      try {
+                        const text = await navigator.clipboard.readText();
+                        if (!text.trim()) throw new Error("Clipboard is empty");
+                        setCallbackUrl(text.trim());
+                        setError(null);
+                      } catch {
+                        setError("Clipboard access failed. Paste the callback URL manually.");
                       }
                     }}
                   >
-                    Auto-fill
+                    Paste
                   </Button>
                 </div>
               </div>

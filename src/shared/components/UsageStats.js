@@ -3,6 +3,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { FREE_PROVIDERS, AI_PROVIDERS } from "@/shared/constants/providers";
+import { getAverageImageDurationMs, isImageUsageItem } from "@/shared/utils/imageUsage";
 
 function isImageProvider(id) {
   const p = AI_PROVIDERS[id];
@@ -14,6 +15,7 @@ function isImageProvider(id) {
   ]);
   return KNOWN_IMAGE_PROVIDERS.has(id);
 }
+
 import Badge from "./Badge";
 import Card from "./Card";
 import OverviewCards from "@/app/(dashboard)/dashboard/usage/components/OverviewCards";
@@ -44,7 +46,7 @@ function TimeAgo({ timestamp }) {
 }
 
 function RecentRequests({ requests = [] }) {
-  const imageRequests = requests.filter(r => r.endpoint === "/v1/images/generations" || /image|sdwebui|comfyui|flux|imagen/i.test(r.model || ""));
+  const imageRequests = requests.filter((request) => isImageUsageItem(request));
   const displayRequests = imageRequests.length > 0 ? imageRequests : requests;
 
   return (
@@ -483,18 +485,11 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
   const imageStats = useMemo(() => {
     if (!stats) return null;
 
-    const isImageItem = (key, item) => {
-      if (item?.endpoint === "/v1/images/generations") return true;
-      const k = String(key || "").toLowerCase();
-      const m = String(item?.rawModel || item?.model || "").toLowerCase();
-      return k.includes("/v1/images/generations") || m.includes("image") || m.includes("flux") || m.includes("imagen") || m.includes("sdwebui") || m.includes("comfyui");
-    };
-
     const filterObj = (obj) => {
       if (!obj) return {};
       const res = {};
       for (const [k, v] of Object.entries(obj)) {
-        if (isImageItem(k, v)) res[k] = v;
+        if (isImageUsageItem(v, k)) res[k] = v;
       }
       return res;
     };
@@ -515,16 +510,9 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
     const imageModelsCount = Object.keys(byModel).length;
     const imageProvidersCount = new Set(Object.values(byModel).map((m) => m.provider).filter(Boolean)).size;
 
-    let totalMs = 0;
-    let countMs = 0;
-    for (const r of (stats.recentRequests || [])) {
-      const dur = r.durationMs || r.latency?.total;
-      if (dur > 0) {
-        totalMs += dur;
-        countMs++;
-      }
-    }
-    const avgDurationStr = countMs > 0 ? `${(totalMs / countMs / 1000).toFixed(1)}s` : "—";
+    const imageRecentRequests = (stats.recentRequests || []).filter((request) => isImageUsageItem(request));
+    const avgDurationMs = getAverageImageDurationMs(imageRecentRequests);
+    const avgDurationStr = avgDurationMs == null ? "—" : `${(avgDurationMs / 1000).toFixed(1)}s`;
 
     return {
       ...stats,
@@ -532,6 +520,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
       imageModelsCount,
       imageProvidersCount,
       avgDurationStr,
+      recentRequests: imageRecentRequests,
       byModel: Object.keys(byModel).length > 0 ? byModel : stats.byModel,
       byAccount: Object.keys(byAccount).length > 0 ? byAccount : stats.byAccount,
       byApiKey: Object.keys(byApiKey).length > 0 ? byApiKey : stats.byApiKey,

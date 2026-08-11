@@ -19,7 +19,7 @@ Inspect model capabilities before attaching references. Prefer models advertisin
 Important image-edit models include:
 
 - `cx/gpt-image-2` and `cx/gpt-image-1.5`: Codex/ChatGPT image tools; require an entitled Plus/Pro account.
-- `cx/gpt-5.5-image`, `cx/gpt-5.4-image`, and `cx/gpt-5.3-image`: Codex image-generation routes.
+- `cx/gpt-5.5-image`: Codex image-generation route.
 - `ag/gemini-3.1-flash-image`: Antigravity text-to-image and multi-reference editing.
 
 ## Endpoint

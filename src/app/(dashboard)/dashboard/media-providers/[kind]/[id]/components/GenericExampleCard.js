@@ -12,8 +12,6 @@ const CLOUDFLARE_TEST_MASK_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r
 const MULTI_REFERENCE_IMAGE_MODELS = new Set([
   "antigravity/gemini-3.1-flash-image",
   "codex/gpt-5.5-image",
-  "codex/gpt-5.4-image",
-  "codex/gpt-5.3-image",
 ]);
 
 function getImageEditDefaults(providerId, modelId) {

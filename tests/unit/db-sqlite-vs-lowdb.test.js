@@ -248,16 +248,20 @@ describe("DB SQLite layer — public API parity", () => {
     expect(exported.settings).toBeDefined();
     expect(Array.isArray(exported.providerConnections)).toBe(true);
     expect(typeof exported.modelAliases).toBe("object");
+    expect(typeof exported.disabledModels).toBe("object");
 
     // Add marker, export, import a different payload, verify reset
     await sqliteDb.setModelAlias("marker", "before");
+    await sqliteDb.disableModels("cx", ["gpt-image-2"]);
     const snap = await sqliteDb.exportDb();
 
     await sqliteDb.setModelAlias("marker", "after");
+    await sqliteDb.enableModels("cx", ["gpt-image-2"]);
     expect((await sqliteDb.getModelAliases()).marker).toBe("after");
 
     await sqliteDb.importDb(snap);
     expect((await sqliteDb.getModelAliases()).marker).toBe("before");
+    expect(await sqliteDb.getDisabledByProvider("cx")).toContain("gpt-image-2");
   });
 
   it("pricing: user pricing merged with constants", async () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import dynamic from "next/dynamic";
 import { Card, Button, Toggle, Input } from "@/shared/components";
 import Modal, { ConfirmModal } from "@/shared/components/Modal";
 import LanguageSwitcher from "@/shared/components/LanguageSwitcher";
@@ -9,6 +10,8 @@ import { cn } from "@/shared/utils/cn";
 import { APP_CONFIG } from "@/shared/constants/config";
 import { LOCALE_COOKIE, normalizeLocale } from "@/i18n/config";
 import { LOCALE_FLAGS } from "@/shared/constants/locales";
+
+const DatabaseJsonEditorModal = dynamic(() => import("./DatabaseJsonEditorModal"), { ssr: false });
 
 function getLocaleFromCookie() {
   if (typeof document === "undefined") return "en";
@@ -33,6 +36,7 @@ export default function ProfilePage() {
   const [dbLoading, setDbLoading] = useState(false);
   const [dbStatus, setDbStatus] = useState({ type: "", message: "" });
   const [dbAuth, setDbAuth] = useState({ open: false, mode: "", password: "" });
+  const [dbEditor, setDbEditor] = useState({ open: false, initialJson: "", password: "" });
   const pendingImportRef = useRef(null);
   const [oidcForm, setOidcForm] = useState({
     authMode: "password",
@@ -725,12 +729,31 @@ export default function ProfilePage() {
     }
   };
 
-  // Confirm password modal, then run export or import.
+  const openDatabaseEditor = async (password) => {
+    setDbLoading(true);
+    setDbStatus({ type: "", message: "" });
+    try {
+      const res = await fetch("/api/settings/database", {
+        headers: { "x-9r-password": password },
+        cache: "no-store",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load database");
+      setDbEditor({ open: true, initialJson: JSON.stringify(data, null, 2), password });
+    } catch (err) {
+      setDbStatus({ type: "error", message: err.message || "Failed to load database" });
+    } finally {
+      setDbLoading(false);
+    }
+  };
+
+  // Confirm password modal, then run the selected database action.
   const handleDbAuthConfirm = async () => {
     const { mode, password } = dbAuth;
     setDbAuth({ open: false, mode: "", password: "" });
     if (mode === "export") await handleExportDatabase(password);
     else if (mode === "import") await runImportDatabase(password);
+    else if (mode === "editor") await openDatabaseEditor(password);
   };
 
   const observabilityEnabled = settings.enableObservability === true;
@@ -818,6 +841,15 @@ export default function ProfilePage() {
                 className="w-full sm:w-auto"
               >
                 Import Backup
+              </Button>
+              <Button
+                variant="primary"
+                icon="edit_note"
+                onClick={() => setDbAuth({ open: true, mode: "editor", password: "" })}
+                disabled={dbLoading}
+                className="w-full sm:w-auto"
+              >
+                Edit Database
               </Button>
               <input
                 ref={importFileRef}
@@ -1663,6 +1695,15 @@ export default function ProfilePage() {
         loading={isShuttingDown}
       />
 
+      {dbEditor.open ? (
+        <DatabaseJsonEditorModal
+          initialJson={dbEditor.initialJson}
+          password={dbEditor.password}
+          onClose={() => setDbEditor({ open: false, initialJson: "", password: "" })}
+          onSaved={reloadSettings}
+        />
+      ) : null}
+
       <Modal
         isOpen={dbAuth.open}
         onClose={() => setDbAuth({ open: false, mode: "", password: "" })}
@@ -1680,7 +1721,7 @@ export default function ProfilePage() {
         }
       >
         <p className="text-text-muted mb-3 text-sm">
-          Enter your current password to {dbAuth.mode === "export" ? "export" : "import"} the database.
+          Enter your current password to {dbAuth.mode === "export" ? "export" : dbAuth.mode === "editor" ? "edit" : "import"} the database.
         </p>
         <Input
           type="password"

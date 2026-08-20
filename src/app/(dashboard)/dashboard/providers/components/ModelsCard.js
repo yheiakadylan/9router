@@ -8,7 +8,7 @@ import { getProviderAlias } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
 // ── ModelRow ───────────────────────────────────────────────────
-export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting }) {
+export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable }) {
   const borderColor = testStatus === "ok" ? "border-green-500/40" : testStatus === "error" ? "border-red-500/40" : "border-border";
   const iconColor = testStatus === "ok" ? "#22c55e" : testStatus === "error" ? "#ef4444" : undefined;
 
@@ -43,11 +43,15 @@ export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCusto
           </span>
         </div>
         {isFree && <span className="text-[10px] font-bold text-green-500 bg-green-500/10 px-1.5 py-0.5 rounded">FREE</span>}
-        {isCustom && (
+        {isCustom ? (
           <button onClick={onDeleteAlias} className="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity ml-auto" title="Remove custom model">
             <span className="material-symbols-outlined text-sm">close</span>
           </button>
-        )}
+        ) : onDisable ? (
+          <button onClick={onDisable} className="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 opacity-100 transition-opacity ml-auto sm:opacity-0 sm:group-hover:opacity-100" title="Disable this model">
+            <span className="material-symbols-outlined text-sm">close</span>
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -64,6 +68,7 @@ ModelRow.propTypes = {
   onDeleteAlias: PropTypes.func,
   onTest: PropTypes.func,
   isTesting: PropTypes.bool,
+  onDisable: PropTypes.func,
 };
 
 // ── AddCustomModelModal ────────────────────────────────────────
@@ -116,22 +121,26 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   const [testingModelId, setTestingModelId] = useState(null);
   const [testError, setTestError] = useState("");
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
+  const [disabledModelIds, setDisabledModelIds] = useState([]);
 
   const providerAlias = providerAliasOverride || getProviderAlias(providerId);
   const effectiveType = kindFilter || "llm";
 
   const fetchData = useCallback(async () => {
     try {
-      const [aliasRes, customRes] = await Promise.all([
+      const [aliasRes, customRes, disabledRes] = await Promise.all([
         fetch("/api/models/alias"),
         fetch("/api/models/custom", { cache: "no-store" }),
+        fetch(`/api/models/disabled?providerAlias=${encodeURIComponent(providerAlias)}`, { cache: "no-store" }),
       ]);
       const aliasData = await aliasRes.json();
       const customData = await customRes.json();
+      const disabledData = await disabledRes.json();
       if (aliasRes.ok) setModelAliases(aliasData.aliases || {});
       if (customRes.ok) setCustomModels(customData.models || []);
+      if (disabledRes.ok) setDisabledModelIds(disabledData.ids || []);
     } catch (e) { console.log("ModelsCard fetch error:", e); }
-  }, []);
+  }, [providerAlias]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -179,6 +188,25 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     } catch (e) { console.log("delete custom model error:", e); }
   };
 
+  const handleDisableModel = async (modelId) => {
+    try {
+      const res = await fetch("/api/models/disabled", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ providerAlias, ids: [modelId] }),
+      });
+      if (res.ok) await fetchData();
+    } catch (e) { console.log("disable model error:", e); }
+  };
+
+  const handleEnableModel = async (modelId) => {
+    try {
+      const params = new URLSearchParams({ providerAlias, id: modelId });
+      const res = await fetch(`/api/models/disabled?${params}`, { method: "DELETE" });
+      if (res.ok) await fetchData();
+    } catch (e) { console.log("enable model error:", e); }
+  };
+
   const handleTestModel = async (modelId) => {
     if (testingModelId) return;
     setTestingModelId(modelId);
@@ -213,7 +241,9 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
       && !builtInModels.some((b) => b.id === m.id)
   );
 
-  const displayModels = builtInModels;
+  const disabledSet = new Set(disabledModelIds);
+  const displayModels = builtInModels.filter((model) => !disabledSet.has(model.id));
+  const disabledDisplayModels = builtInModels.filter((model) => disabledSet.has(model.id));
 
   return (
     <>
@@ -241,6 +271,7 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
                 onTest={() => handleTestModel(model.id)}
                 isTesting={testingModelId === model.id}
                 isFree={model.isFree}
+                onDisable={() => handleDisableModel(model.id)}
               />
             );
           })}
@@ -268,6 +299,25 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
             <span className="material-symbols-outlined text-sm">add</span>
             Add Model
           </button>
+
+          {disabledDisplayModels.length > 0 && (
+            <div className="w-full mt-2">
+              <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
+              <div className="flex flex-wrap gap-2">
+                {disabledDisplayModels.map((model) => (
+                  <button
+                    key={model.id}
+                    onClick={() => handleEnableModel(model.id)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                    title="Restore model"
+                  >
+                    <span className="material-symbols-outlined text-[13px]">add</span>
+                    {model.id}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </Card>
 

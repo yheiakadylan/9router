@@ -310,6 +310,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
     ...modelErrorUpdate,
+    ...(Number(status) === 429 ? { isActive: false } : {}),
     ...(validationRequired ? {
       antigravityValidationRequired: true,
       antigravityValidationUrl: validationUrl,

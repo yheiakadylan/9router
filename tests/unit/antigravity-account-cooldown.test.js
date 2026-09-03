@@ -152,6 +152,25 @@ describe("Antigravity account cooldown selection", () => {
     })));
   });
 
+  it("deactivates an account when the provider returns 429", async () => {
+    const connection = account("limited", 1);
+    mocks.getProviderConnections.mockResolvedValue([connection]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await markAccountUnavailable(
+      connection.id,
+      429,
+      "usage limit reached",
+      "antigravity",
+      "gemini-3.1-flash-image"
+    );
+
+    expect(mocks.updateProviderConnection).toHaveBeenCalledWith(
+      "limited",
+      expect.objectContaining({ isActive: false })
+    );
+  });
+
   it("lists only active accounts that are still usable", async () => {
     const failed = account("failed", 1);
     const ready = account("ready", 2);

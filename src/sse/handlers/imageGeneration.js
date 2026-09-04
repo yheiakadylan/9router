@@ -14,6 +14,8 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
+import { randomUUID } from "node:crypto";
+import { trackPendingRequest } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
@@ -139,6 +141,17 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
   const { provider, model } = modelInfo;
   const estimatedTokens = estimateImageTokens(body);
+  const requestId = randomUUID();
+  let streamPending = false;
+  let streamReleased = false;
+  const releaseImageRequest = () => {
+    if (streamReleased) return;
+    streamReleased = true;
+    trackPendingRequest(model, provider, preferredConnectionId, false, false, "image", requestId);
+  };
+  trackPendingRequest(model, provider, preferredConnectionId, true, false, "image", requestId);
+
+  try {
 
   // noAuth providers — no credential needed
   if (NO_AUTH_PROVIDERS.has(provider)) {
@@ -225,6 +238,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         await clearAccountError(credentials.connectionId, credentials, model);
       },
       onStreamComplete: ({ success, response, error, firstChunkAt, completedAt }) => {
+        releaseImageRequest();
         const finishedAt = completedAt || Date.now();
         const durationMs = finishedAt - startTime;
         const ttftMs = firstChunkAt ? firstChunkAt - startTime : durationMs;
@@ -256,6 +270,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     });
 
     if (result.streamed) {
+      streamPending = true;
       return withConnectionMetadata(result.response, credentials);
     }
 
@@ -316,5 +331,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     }
 
     return result.response;
+  }
+  } finally {
+    if (!streamPending) releaseImageRequest();
   }
 }

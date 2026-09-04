@@ -13,8 +13,15 @@ export default function OverviewCards({ stats }) {
   const successRate = stats.successRate ?? "100%";
   const avgDurationStr = stats.avgDurationStr ?? "—";
 
+  const activeImageRequests = stats.activeCounts?.image ?? 0;
+
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 sm:gap-4">
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-6 sm:gap-4">
+      <Card className="flex min-w-0 flex-col gap-1 px-4 py-3">
+        <span className="text-text-muted text-xs uppercase font-semibold">Ảnh đang xử lý</span>
+        <span className="truncate text-2xl font-bold text-warning">{fmt(activeImageRequests)}</span>
+        <span className="text-[11px] text-text-muted">request đang gọi upstream</span>
+      </Card>
       <Card className="flex min-w-0 flex-col gap-1 px-4 py-3">
         <span className="text-text-muted text-xs uppercase font-semibold">Tổng số lượt Gen Ảnh</span>
         <span className="truncate text-2xl font-bold text-primary">{fmt(totalImageRequests)}</span>

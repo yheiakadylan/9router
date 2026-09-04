@@ -299,6 +299,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           return {
             ...prev,
             activeRequests: data.activeRequests,
+            activeCounts: data.activeCounts,
             recentRequests: data.recentRequests,
             errorProvider: data.errorProvider,
             pending: data.pending,

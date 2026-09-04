@@ -10,18 +10,21 @@ function maskApiKey(key) {
 }
 
 const PENDING_TIMEOUT_MS = 60 * 1000;
+const IMAGE_PENDING_TIMEOUT_MS = 15 * 60 * 1000;
 const RING_CAP = 50;
 const CONN_CACHE_TTL_MS = 30 * 1000;
 const PERIOD_MS = { "24h": 86400000, "7d": 604800000, "30d": 2592000000, "60d": 5184000000 };
 
 // In-memory state shared across Next.js modules
-if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {} };
+if (!global._pendingRequests) global._pendingRequests = { byModel: {}, byAccount: {}, byType: {} };
+if (!global._pendingRequests.byType) global._pendingRequests.byType = {};
 if (!global._lastErrorProvider) global._lastErrorProvider = { provider: "", ts: 0 };
 if (!global._statsEmitter) {
   global._statsEmitter = new EventEmitter();
   global._statsEmitter.setMaxListeners(50);
 }
 if (!global._pendingTimers) global._pendingTimers = {};
+if (!global._pendingRequestIds) global._pendingRequestIds = new Set();
 if (!global._recentRing) global._recentRing = { items: [], initialized: false };
 if (!global._connectionMapCache) global._connectionMapCache = { map: {}, ts: 0 };
 if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update: null };
@@ -29,6 +32,7 @@ if (!global._statsEmitTimers) global._statsEmitTimers = { pending: null, update:
 const pendingRequests = global._pendingRequests;
 const lastErrorProvider = global._lastErrorProvider;
 const pendingTimers = global._pendingTimers;
+const pendingRequestIds = global._pendingRequestIds;
 const recentRing = global._recentRing;
 const connCache = global._connectionMapCache;
 const statsEmitTimers = global._statsEmitTimers;
@@ -150,9 +154,22 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false) {
+export function trackPendingRequest(model, provider, connectionId, started, error = false, requestType = "chat", requestId = null) {
   const modelKey = provider ? `${model} (${provider})` : model;
-  const timerKey = `${connectionId}|${modelKey}`;
+  const type = requestType === "image" ? "image" : "chat";
+  const timerKey = requestId ? `${type}|${requestId}` : `${connectionId}|${modelKey}`;
+
+  if (requestId) {
+    if (started) {
+      if (pendingRequestIds.has(requestId)) return;
+      pendingRequestIds.add(requestId);
+    } else {
+      if (!pendingRequestIds.has(requestId)) return;
+      pendingRequestIds.delete(requestId);
+    }
+  }
+
+  pendingRequests.byType[type] = Math.max(0, Number(pendingRequests.byType[type] || 0) + (started ? 1 : -1));
 
   if (!pendingRequests.byModel[modelKey]) pendingRequests.byModel[modelKey] = 0;
   pendingRequests.byModel[modelKey] = Math.max(0, pendingRequests.byModel[modelKey] + (started ? 1 : -1));
@@ -174,12 +191,25 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
     clearTimeout(pendingTimers[timerKey]);
     pendingTimers[timerKey] = setTimeout(() => {
       delete pendingTimers[timerKey];
-      if (pendingRequests.byModel[modelKey] > 0) pendingRequests.byModel[modelKey] = 0;
-      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
-        pendingRequests.byAccount[connectionId][modelKey] = 0;
+      if (requestId) pendingRequestIds.delete(requestId);
+      if (type === "image") {
+        pendingRequests.byModel[modelKey] = Math.max(0, Number(pendingRequests.byModel[modelKey] || 0) - 1);
+        if (pendingRequests.byModel[modelKey] === 0) delete pendingRequests.byModel[modelKey];
+      } else if (pendingRequests.byModel[modelKey] > 0) {
+        pendingRequests.byModel[modelKey] = 0;
       }
+      if (connectionId && pendingRequests.byAccount[connectionId]?.[modelKey] > 0) {
+        pendingRequests.byAccount[connectionId][modelKey] = type === "image"
+          ? Math.max(0, pendingRequests.byAccount[connectionId][modelKey] - 1)
+          : 0;
+        if (pendingRequests.byAccount[connectionId][modelKey] === 0) {
+          delete pendingRequests.byAccount[connectionId][modelKey];
+          if (Object.keys(pendingRequests.byAccount[connectionId]).length === 0) delete pendingRequests.byAccount[connectionId];
+        }
+      }
+      if (pendingRequests.byType[type] > 0) pendingRequests.byType[type]--;
       scheduleStatsEvent("pending");
-    }, PENDING_TIMEOUT_MS);
+    }, type === "image" ? IMAGE_PENDING_TIMEOUT_MS : PENDING_TIMEOUT_MS);
   } else {
     clearTimeout(pendingTimers[timerKey]);
     delete pendingTimers[timerKey];
@@ -237,7 +267,16 @@ export async function getActiveRequests() {
     .slice(0, 20);
 
   const errorProvider = (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "";
-  return { activeRequests, recentRequests, errorProvider };
+  return {
+    activeRequests,
+    activeCounts: {
+      total: Object.values(pendingRequests.byType || {}).reduce((sum, count) => sum + Number(count || 0), 0),
+      image: Number(pendingRequests.byType.image || 0),
+      chat: Number(pendingRequests.byType.chat || 0),
+    },
+    recentRequests,
+    errorProvider,
+  };
 }
 
 export async function saveRequestUsage(entry) {
@@ -404,6 +443,11 @@ export async function getUsageStats(period = "all") {
     last10Minutes: [],
     pending: pendingRequests,
     activeRequests: [],
+    activeCounts: {
+      total: Object.values(pendingRequests.byType || {}).reduce((sum, count) => sum + Number(count || 0), 0),
+      image: Number(pendingRequests.byType.image || 0),
+      chat: Number(pendingRequests.byType.chat || 0),
+    },
     recentRequests,
     errorProvider: (Date.now() - lastErrorProvider.ts < 10000) ? lastErrorProvider.provider : "",
   };

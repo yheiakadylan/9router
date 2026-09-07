@@ -41,7 +41,7 @@ describe("Codex GPT-5.6 image models", () => {
       modelInfo,
       body: {
         prompt: "Make the square blue",
-        image: "data:image/png;base64,cmVmZXJlbmNl",
+        image: "data:image/png;base64,iVBORw0KGgo=",
         image_detail: "low",
         size: "1024x1024",
         quality: "high",
@@ -65,7 +65,7 @@ describe("Codex GPT-5.6 image models", () => {
       quality: "high", background: "transparent",
     }]);
     expect(upstreamBody.input[0].content).toContainEqual({
-      type: "input_image", image_url: "data:image/png;base64,cmVmZXJlbmNl", detail: "low",
+      type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "low",
     });
     const stream = await result.response.text();
     expect(stream).toContain('event: partial_image\ndata: {"b64_json":"cGFydGlhbA==","index":0}');

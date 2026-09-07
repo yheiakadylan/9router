@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { nowSec } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { detectImageMime, encodeDataUri, parseDataUri } from "../../translator/concerns/image.js";
+import { detectImageMime, encodeDataUri, fetchImageAsBase64, parseDataUri } from "../../translator/concerns/image.js";
 
 const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
 const CODEX_USER_AGENT = "codex_cli_rs/0.136.0";
@@ -54,13 +54,17 @@ function decodeBase64Image(input) {
   return mimeType ? { base64: buffer.toString("base64"), mimeType } : null;
 }
 
-function toDataUrl(input, label) {
+async function toDataUrl(input, label) {
   if (!input || typeof input !== "string") {
     throw new Error(`Invalid reference image at ${label}. Use an image URL, image data URL, or raw image base64.`);
   }
 
   const trimmed = input.trim();
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    const fetched = await fetchImageAsBase64(trimmed);
+    if (fetched) return fetched.url;
+    throw new Error(`Unable to download reference image at ${label}. Check that the URL is public and still available.`);
+  }
 
   const parsed = parseDataUri(trimmed);
   if (parsed?.mimeType?.startsWith("image/")) {
@@ -221,13 +225,15 @@ export default {
       "x-client-request-id": randomUUID(),
     };
   },
-  buildBody: (model, body) => {
+  buildBody: async (model, body) => {
     const refs = [];
     if (Array.isArray(body.images)) {
-      body.images.forEach((image, index) => refs.push(toDataUrl(image, `images[${index}]`)));
+      for (const [index, image] of body.images.entries()) {
+        refs.push(await toDataUrl(image, `images[${index}]`));
+      }
     }
     if (body.image != null && body.image !== "") {
-      refs.push(toDataUrl(body.image, "image"));
+      refs.push(await toDataUrl(body.image, "image"));
     }
     const detail = body.image_detail || CODEX_REF_DETAIL;
     const { responsesModel, toolModel } = resolveCodexImageModels(model);

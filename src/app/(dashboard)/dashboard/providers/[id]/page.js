@@ -79,6 +79,7 @@ export default function ProviderDetailPage() {
   const [oneByOneCurrentConnectionId, setOneByOneCurrentConnectionId] = useState(null);
   const [oneByOneResults, setOneByOneResults] = useState({});
   const [oneByOneSummary, setOneByOneSummary] = useState(null);
+  const [clearingLocks, setClearingLocks] = useState(false);
   const stopOneByOneRef = useRef(false);
   const [importingQoderModels, setImportingQoderModels] = useState(false);
   const { copied, copy } = useCopyToClipboard();
@@ -255,6 +256,26 @@ export default function ProviderDetailPage() {
       if (res.ok) await fetchDisabledModels();
     } catch (error) {
       console.log("Error enabling all models:", error);
+    }
+  };
+
+  const handleClearAllCooldowns = async () => {
+    setClearingLocks(true);
+    try {
+      const res = await fetch("/api/models/availability", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clearAllCooldowns", provider: providerId }),
+      });
+      if (res.ok) {
+        await fetchConnections();
+      } else {
+        setModelsTestError("Failed to clear model locks");
+      }
+    } catch {
+      setModelsTestError("Failed to clear model locks");
+    } finally {
+      setClearingLocks(false);
     }
   };
 
@@ -1426,6 +1447,17 @@ export default function ProviderDetailPage() {
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="text-lg font-semibold">Connections</h2>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4">
+              {connections.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  icon="lock_open"
+                  onClick={handleClearAllCooldowns}
+                  disabled={clearingLocks}
+                >
+                  {clearingLocks ? "Clearing..." : "Clear all locks"}
+                </Button>
+              )}
               {connections.length > 0 && proxyPools.length > 0 && (
                 <Button
                   size="sm"

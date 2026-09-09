@@ -6,8 +6,10 @@ import {
   isValidApiKey,
 } from "../services/auth.js";
 import { getSettings } from "@/lib/localDb";
+import { getDisabledByProvider } from "@/lib/disabledModelsDb";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
+import CODEX_REGISTRY from "open-sse/providers/registry/codex.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -19,6 +21,26 @@ import { trackPendingRequest } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
+const CODEX_IMAGE_MODEL_IDS = CODEX_REGISTRY.models
+  .filter((entry) => entry.kind === "image")
+  .map((entry) => entry.id);
+const CODEX_IMAGE_FALLBACKS = [
+  "gpt-5.5-image",
+  ...CODEX_IMAGE_MODEL_IDS.filter((id) => id !== "gpt-5.5-image"),
+];
+
+async function resolveCodexImageModel(model) {
+  if (!CODEX_IMAGE_MODEL_IDS.includes(model)) return model;
+
+  const disabled = new Set();
+  for (const alias of ["cx", "codex"]) {
+    const ids = (await getDisabledByProvider(alias).catch(() => [])) || [];
+    for (const id of ids) disabled.add(id);
+  }
+  if (!disabled.has(model)) return model;
+
+  return CODEX_IMAGE_FALLBACKS.find((id) => !disabled.has(id)) || null;
+}
 
 function withConnectionMetadata(response, credentials) {
   if (!response || !credentials?.connectionId) return response;
@@ -139,7 +161,18 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
 
-  const { provider, model } = modelInfo;
+  const { provider } = modelInfo;
+  let { model } = modelInfo;
+  if (provider === "codex") {
+    const routedModel = await resolveCodexImageModel(model);
+    if (!routedModel) {
+      return errorResponse(HTTP_STATUS.SERVICE_UNAVAILABLE, "No active Codex image model available");
+    }
+    if (routedModel !== model) {
+      log.info("IMAGE", `Codex model ${model} is disabled; falling back to ${routedModel}`);
+      model = routedModel;
+    }
+  }
   const estimatedTokens = estimateImageTokens(body);
   const requestId = randomUUID();
   let streamPending = false;
@@ -311,7 +344,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       response: { error: result.error },
     }).catch(() => {});
 
-    // Invalid client payloads are account-independent; do not rotate or lock credentials.
+    // Non-retryable request failures are account-independent; do not rotate or lock credentials.
     if (result.retryable === false) return result.response;
 
     const { shouldFallback } = await markAccountUnavailable(

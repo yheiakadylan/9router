@@ -67,6 +67,31 @@ export async function POST(request) {
   try {
     const { action, provider, model } = await request.json();
 
+    if (action === "clearAllCooldowns") {
+      const connections = await getProviderConnections(provider ? { provider } : {});
+      await Promise.all(
+        connections.map((connection) => {
+          const clearedLocks = Object.fromEntries(
+            Object.keys(connection)
+              .filter((key) => key.startsWith(MODEL_LOCK_PREFIX))
+              .map((key) => [key, null]),
+          );
+          if (connection.testStatus === "unavailable") {
+            Object.assign(clearedLocks, {
+              testStatus: "active",
+              lastError: null,
+              lastErrorAt: null,
+              backoffLevel: 0,
+            });
+          }
+          return Object.keys(clearedLocks).length
+            ? updateProviderConnection(connection.id, clearedLocks)
+            : null;
+        }),
+      );
+      return NextResponse.json({ ok: true });
+    }
+
     if (action !== "clearCooldown" || !provider || !model) {
       return NextResponse.json({ error: "Invalid request" }, { status: 400 });
     }

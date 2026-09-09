@@ -25,7 +25,7 @@ function serializeRequestBody(requestBody) {
  * @param {function} [options.onCredentialsRefreshed]
  * @param {function} [options.onRequestSuccess]
  * @param {function} [options.onStreamComplete]
- * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string }>}
+ * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string, retryable?: boolean }>}
  */
 export async function handleImageGenerationCore({
   body,
@@ -167,7 +167,10 @@ export async function handleImageGenerationCore({
     const { statusCode, message } = await parseUpstreamError(providerResponse);
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     log?.debug?.("IMAGE", `Provider error: ${errMsg}`);
-    return createErrorResult(statusCode, errMsg);
+    const result = createErrorResult(statusCode, errMsg);
+    // Adapters can mark deterministic request errors so credentialed callers do not rotate accounts.
+    if (adapter.isRequestScopedError?.(statusCode, message)) result.retryable = false;
+    return result;
   }
 
   // Parse provider response — adapter may override (codex SSE / async polling / binary)

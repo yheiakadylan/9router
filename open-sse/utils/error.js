@@ -77,7 +77,8 @@ export async function parseUpstreamError(response, executor = null) {
   let message = "";
   try {
     const json = JSON.parse(bodyText);
-    message = json.error?.message || json.message || json.error || bodyText;
+    message = json.error?.message || json.message || json.error?.detail?.message ||
+      json.error?.detail || json.error || json.detail?.message || json.detail || bodyText;
   } catch {
     message = bodyText;
   }

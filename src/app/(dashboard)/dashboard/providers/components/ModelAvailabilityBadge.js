@@ -76,6 +76,27 @@ export default function ModelAvailabilityBadge() {
     }
   };
 
+  const handleClearAllCooldowns = async () => {
+    setClearing("all");
+    try {
+      const res = await fetch("/api/models/availability", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "clearAllCooldowns" }),
+      });
+      if (res.ok) {
+        notify.success("All model locks cleared");
+        await fetchStatus();
+      } else {
+        notify.error("Failed to clear model locks");
+      }
+    } catch {
+      notify.error("Failed to clear model locks");
+    } finally {
+      setClearing(null);
+    }
+  };
+
   if (loading) return null;
 
   const models = data?.models || [];
@@ -93,7 +114,7 @@ export default function ModelAvailabilityBadge() {
 
   return (
     <div className="relative" ref={ref}>
-      {/* <button
+      <button
         onClick={() => setExpanded(!expanded)}
         className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition-all ${
           isHealthy
@@ -107,7 +128,7 @@ export default function ModelAvailabilityBadge() {
         {isHealthy
           ? "All models operational"
           : `${unavailableCount} model${unavailableCount !== 1 ? "s" : ""} with issues`}
-      </button> */}
+      </button>
 
       {expanded && (
         <div className="absolute top-full right-0 mt-2 w-80 bg-surface border border-border rounded-xl shadow-2xl z-50 overflow-hidden">
@@ -121,13 +142,26 @@ export default function ModelAvailabilityBadge() {
               </span>
               <span className="text-sm font-semibold text-text-main">Model Status</span>
             </div>
-            <button
-              onClick={fetchStatus}
-              className="p-1 rounded-lg hover:bg-surface text-text-muted hover:text-text-main transition-colors"
-              title="Refresh"
-            >
-              <span className="material-symbols-outlined text-[14px]">refresh</span>
-            </button>
+            <div className="flex items-center gap-1">
+              {!isHealthy && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleClearAllCooldowns}
+                  disabled={clearing === "all"}
+                  className="text-[10px] px-1.5! py-0.5!"
+                >
+                  {clearing === "all" ? "..." : "Clear all"}
+                </Button>
+              )}
+              <button
+                onClick={fetchStatus}
+                className="p-1 rounded-lg hover:bg-surface text-text-muted hover:text-text-main transition-colors"
+                title="Refresh"
+              >
+                <span className="material-symbols-outlined text-[14px]">refresh</span>
+              </button>
+            </div>
           </div>
 
           <div className="px-4 py-3 max-h-60 overflow-y-auto">

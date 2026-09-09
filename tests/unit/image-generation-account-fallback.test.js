@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   extractApiKey: vi.fn(),
   isValidApiKey: vi.fn(),
   getSettings: vi.fn(),
+  getDisabledByProvider: vi.fn(),
   getModelInfo: vi.fn(),
   getComboModels: vi.fn(),
   handleImageGenerationCore: vi.fn(),
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   checkAndRefreshToken: vi.fn(),
   saveRequestUsage: vi.fn(),
   saveRequestDetail: vi.fn(),
+  trackPendingRequest: vi.fn(),
 }));
 
 vi.mock("../../src/sse/services/auth.js", () => ({
@@ -26,6 +28,10 @@ vi.mock("../../src/sse/services/auth.js", () => ({
 
 vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
+}));
+
+vi.mock("@/lib/disabledModelsDb", () => ({
+  getDisabledByProvider: mocks.getDisabledByProvider,
 }));
 
 vi.mock("../../src/sse/services/model.js", () => ({
@@ -44,6 +50,7 @@ vi.mock("../../src/sse/services/tokenRefresh.js", () => ({
 
 vi.mock("@/lib/usageDb.js", () => ({
   saveRequestUsage: mocks.saveRequestUsage,
+  trackPendingRequest: mocks.trackPendingRequest,
 }));
 
 vi.mock("@/lib/requestDetailsDb", () => ({
@@ -56,6 +63,7 @@ describe("image generation account fallback", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.getSettings.mockResolvedValue({ requireApiKey: false });
+    mocks.getDisabledByProvider.mockResolvedValue([]);
     mocks.getComboModels.mockResolvedValue(null);
     mocks.getModelInfo.mockResolvedValue({
       provider: "antigravity",
@@ -148,6 +156,58 @@ describe("image generation account fallback", () => {
     expect(response.status).toBe(400);
     expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
     expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("falls back before selecting an account when a Codex image model is disabled", async () => {
+    const account = { connectionId: "codex-active", accessToken: "token" };
+    mocks.getModelInfo.mockResolvedValue({ provider: "codex", model: "gpt-image-2" });
+    mocks.getDisabledByProvider.mockImplementation(async (alias) => alias === "cx" ? ["gpt-image-2"] : []);
+    mocks.getProviderCredentials.mockResolvedValueOnce(account);
+    mocks.handleImageGenerationCore.mockResolvedValueOnce({
+      success: true,
+      response: Response.json({ created: 1, data: [{ b64_json: "generated" }] }),
+    });
+
+    const response = await handleImageGeneration(new Request("http://router.test/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "codex/gpt-image-2", prompt: "A cat" }),
+    }));
+
+    expect(response.status).toBe(200);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledWith("codex", expect.any(Set), "gpt-5.5-image", expect.any(Object));
+    expect(mocks.handleImageGenerationCore).toHaveBeenCalledWith(expect.objectContaining({
+      modelInfo: { provider: "codex", model: "gpt-5.5-image" },
+    }));
+    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+  });
+
+  it("surfaces Codex model-access 400s without locking or rotating accounts", async () => {
+    const account = { connectionId: "codex-first", accessToken: "token" };
+    const message = "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.";
+    mocks.getModelInfo.mockResolvedValue({ provider: "codex", model: "gpt-image-2" });
+    mocks.getProviderCredentials.mockResolvedValueOnce(account);
+    mocks.handleImageGenerationCore.mockResolvedValueOnce({
+      success: false,
+      status: 400,
+      error: `[400]: ${message}`,
+      retryable: false,
+      response: Response.json({ error: { message: `[400]: ${message}` } }, { status: 400 }),
+    });
+
+    const response = await handleImageGeneration(new Request("http://router.test/v1/images/generations", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "codex/gpt-image-2",
+        prompt: "A cat",
+      }),
+    }));
+
+    expect(response.status).toBe(400);
+    expect(mocks.getProviderCredentials).toHaveBeenCalledTimes(1);
+    expect(mocks.markAccountUnavailable).not.toHaveBeenCalled();
+    expect(await response.json()).toEqual({ error: { message: `[400]: ${message}` } });
   });
 
   it("records Codex stream duration when the final image arrives", async () => {

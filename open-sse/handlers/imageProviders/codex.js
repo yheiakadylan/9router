@@ -12,6 +12,16 @@ const CODEX_REF_DETAIL = "high";
 const CODEX_IMAGES_MAIN_MODEL = "gpt-5.4-mini";
 const CODEX_TOOL_IMAGE_MODELS = new Set(["gpt-image-1.5", "gpt-image-2"]);
 
+// These failures describe the request/model contract, not account health.
+function isRequestScopedError(status, message) {
+  if (Number(status) !== 400) return false;
+  const text = String(message || "");
+  return /requires a newer version of codex/i.test(text) ||
+    /model[\s\S]{0,160}(?:not supported|unsupported|does not exist|not found|not available|do not have access|access denied)/i.test(text) ||
+    /(?:not supported|unsupported|does not exist|not found|not available|do not have access|access denied)[\s\S]{0,160}model/i.test(text) ||
+    /model[_\s-]*not[_\s-]*found/i.test(text);
+}
+
 function decodeAccountId(idToken) {
   try {
     const parts = String(idToken || "").split(".");
@@ -209,6 +219,7 @@ function buildSseResponse(providerResponse, log, onSuccess, onComplete) {
 
 export default {
   stream: true,
+  isRequestScopedError,
   buildUrl: () => CODEX_RESPONSES_URL,
   buildHeaders: (creds) => {
     const accountId = creds?.providerSpecificData?.chatgptAccountId || decodeAccountId(creds?.idToken);

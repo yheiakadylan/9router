@@ -472,6 +472,32 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64gptimage2");
   });
 
+  it("returns Codex model-access errors as non-retryable 400s", async () => {
+    const message = "The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.";
+    global.fetch.mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: message }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      })
+    );
+
+    const result = await handleImageGenerationCore({
+      body: { prompt: "A cat" },
+      modelInfo: { provider: "codex", model: "gpt-image-2" },
+      credentials: {
+        accessToken: "codex-token",
+        providerSpecificData: { chatgptAccountId: "account-123" },
+      },
+      log: null,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(400);
+    expect(result.retryable).toBe(false);
+    expect(result.error).toBe(`[400]: ${message}`);
+    expect((await result.response.json()).error.message).toBe(`[400]: ${message}`);
+  });
+
   it("rejects text accidentally placed in Codex images[] before calling upstream", async () => {
     const result = await handleImageGenerationCore({
       body: {

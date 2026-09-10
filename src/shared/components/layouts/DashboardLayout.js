@@ -39,7 +39,7 @@ export default function DashboardLayout({ children }) {
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-bg">
-      <div className="fixed top-4 right-4 z-[80] flex w-[min(92vw,380px)] flex-col gap-2">
+      <div className="fixed top-4 right-4 z-80 flex w-[min(92vw,380px)] flex-col gap-2">
         {notifications.map((n) => {
           const style = getToastStyle(n.type);
           return (
@@ -51,7 +51,7 @@ export default function DashboardLayout({ children }) {
                 <span className="material-symbols-outlined text-[18px] leading-5">{style.icon}</span>
                 <div className="min-w-0 flex-1">
                   {n.title ? <p className="text-xs font-semibold mb-0.5">{n.title}</p> : null}
-                  <p className="text-xs whitespace-pre-wrap break-words">{n.message}</p>
+                  <p className="text-xs whitespace-pre-wrap wrap-break-word">{n.message}</p>
                 </div>
                 {n.dismissible ? (
                   <button
@@ -91,12 +91,14 @@ export default function DashboardLayout({ children }) {
       </div>
 
       {/* Main content */}
-      <main className="flex flex-col flex-1 h-full min-w-0 relative transition-colors duration-300 isolate">
+      <main className="flex flex-col flex-1 h-full min-w-0 relative overflow-y-auto custom-scrollbar transition-colors duration-300 isolate">
         {/* Faint grid background */}
-        <div className="landing-grid absolute inset-0 pointer-events-none -z-10" aria-hidden="true" />
-        <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
-        <div className="flex-1 overflow-y-auto p-6 custom-scrollbar lg:p-10">
-          <div className="mx-auto max-w-7xl">{children}</div>
+        <div className="landing-grid fixed inset-0 lg:left-72 pointer-events-none -z-10" aria-hidden="true" />
+        <div className="sticky top-0 z-30 bg-bg/95">
+          <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
+        </div>
+        <div className="flex min-h-0 flex-1 p-6">
+          <div className="mx-auto min-h-full w-full max-w-7xl">{children}</div>
         </div>
       </main>
     </div>

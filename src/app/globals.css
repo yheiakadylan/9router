@@ -385,6 +385,28 @@ button:disabled,
 }
 .animate-pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
+@keyframes imageGenerationShimmer {
+  0% { background-position: -160% 0; }
+  100% { background-position: 160% 0; }
+}
+.image-generation-shimmer {
+  background: linear-gradient(105deg, transparent 28%, rgba(255, 255, 255, 0.78) 48%, transparent 68%), linear-gradient(135deg, rgba(229, 106, 74, 0.08), rgba(255, 255, 255, 0.18));
+  background-size: 220% 100%, 100% 100%;
+  animation: imageGenerationShimmer 1.65s linear infinite;
+}
+@keyframes imageGenerationDot {
+  0%, 80%, 100% { transform: scale(0.65); opacity: 0.35; }
+  40% { transform: scale(1); opacity: 1; }
+}
+.image-generation-dot { animation: imageGenerationDot 1.2s ease-in-out infinite; }
+.image-generation-dot:nth-child(2) { animation-delay: 0.16s; }
+.image-generation-dot:nth-child(3) { animation-delay: 0.32s; }
+@keyframes imageGenerationProgress {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(240%); }
+}
+.image-generation-progress { animation: imageGenerationProgress 1.2s ease-in-out infinite; }
+
 @keyframes border-glow {
   0%, 100% {
     box-shadow: 0 0 5px rgba(229, 106, 74, 0.3), 0 0 10px rgba(229, 106, 74, 0.2);

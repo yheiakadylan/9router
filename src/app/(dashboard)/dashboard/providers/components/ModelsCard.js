@@ -1,20 +1,49 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import PropTypes from "prop-types";
+import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, rectSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Card, Button, Modal } from "@/shared/components";
 import { getModelsByProviderId, getModelKind } from "@/shared/constants/models";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 
+// ── Sortable Wrapper ──────────────────────────────────────────
+function SortableModelCard({ id, children }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+    zIndex: isDragging ? 50 : undefined,
+  };
+  return (
+    <div ref={setNodeRef} style={style}>
+      {children({ attributes, listeners })}
+    </div>
+  );
+}
+
 // ── ModelRow ───────────────────────────────────────────────────
-export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable }) {
+export function ModelRow({ model, fullModel, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, dragHandleProps }) {
   const borderColor = testStatus === "ok" ? "border-green-500/40" : testStatus === "error" ? "border-red-500/40" : "border-border";
   const iconColor = testStatus === "ok" ? "#22c55e" : testStatus === "error" ? "#ef4444" : undefined;
 
   return (
     <div className={`group px-3 py-2 rounded-lg border ${borderColor} hover:bg-sidebar/50`}>
       <div className="flex items-center gap-2">
+        {dragHandleProps && (
+          <button
+            {...dragHandleProps}
+            type="button"
+            title="Drag to reorder"
+            className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-text-muted/40 hover:text-primary transition-colors shrink-0"
+          >
+            <span className="material-symbols-outlined text-[15px] select-none">drag_indicator</span>
+          </button>
+        )}
         <span className="material-symbols-outlined text-base" style={iconColor ? { color: iconColor } : undefined}>
           {testStatus === "ok" ? "check_circle" : testStatus === "error" ? "cancel" : "smart_toy"}
         </span>
@@ -69,6 +98,7 @@ ModelRow.propTypes = {
   onTest: PropTypes.func,
   isTesting: PropTypes.bool,
   onDisable: PropTypes.func,
+  dragHandleProps: PropTypes.object,
 };
 
 // ── AddCustomModelModal ────────────────────────────────────────
@@ -122,25 +152,34 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   const [testError, setTestError] = useState("");
   const [showAddCustomModel, setShowAddCustomModel] = useState(false);
   const [disabledModelIds, setDisabledModelIds] = useState([]);
+  const [modelOrder, setModelOrder] = useState([]);
 
   const providerAlias = providerAliasOverride || getProviderAlias(providerId);
   const effectiveType = kindFilter || "llm";
 
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
+
   const fetchData = useCallback(async () => {
     try {
-      const [aliasRes, customRes, disabledRes] = await Promise.all([
+      const [aliasRes, customRes, disabledRes, orderRes] = await Promise.all([
         fetch("/api/models/alias"),
         fetch("/api/models/custom", { cache: "no-store" }),
         fetch(`/api/models/disabled?providerAlias=${encodeURIComponent(providerAlias)}`, { cache: "no-store" }),
+        fetch(`/api/models/order?providerAlias=${encodeURIComponent(providerAlias)}&kind=${encodeURIComponent(effectiveType)}`, { cache: "no-store" }),
       ]);
       const aliasData = await aliasRes.json();
       const customData = await customRes.json();
       const disabledData = await disabledRes.json();
+      const orderData = orderRes.ok ? await orderRes.json() : {};
       if (aliasRes.ok) setModelAliases(aliasData.aliases || {});
       if (customRes.ok) setCustomModels(customData.models || []);
       if (disabledRes.ok) setDisabledModelIds(disabledData.ids || []);
+      if (orderRes.ok && Array.isArray(orderData.order)) setModelOrder(orderData.order);
     } catch (e) { console.log("ModelsCard fetch error:", e); }
-  }, [providerAlias]);
+  }, [providerAlias, effectiveType]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -239,86 +278,154 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
     (m) => m.providerAlias === providerAlias
       && getModelKind(m, "llm") === effectiveType
       && !builtInModels.some((b) => b.id === m.id)
-  );
+  ).map((m) => ({ ...m, isCustom: true }));
 
   const disabledSet = new Set(disabledModelIds);
   const displayModels = builtInModels.filter((model) => !disabledSet.has(model.id));
   const disabledDisplayModels = builtInModels.filter((model) => disabledSet.has(model.id));
 
+  // Combine and sort models according to modelOrder
+  const sortedModels = useMemo(() => {
+    const combined = [...displayModels, ...myCustomModels];
+    if (!modelOrder.length) return combined;
+
+    const orderMap = new Map();
+    modelOrder.forEach((id, idx) => orderMap.set(id, idx));
+
+    return [...combined].sort((a, b) => {
+      const aIndex = orderMap.has(a.id) ? orderMap.get(a.id) : 9999;
+      const bIndex = orderMap.has(b.id) ? orderMap.get(b.id) : 9999;
+      if (aIndex !== bIndex) return aIndex - bIndex;
+      return 0;
+    });
+  }, [displayModels, myCustomModels, modelOrder]);
+
+  const handleDragEnd = async (event) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+
+    const oldIndex = sortedModels.findIndex((m) => m.id === active.id);
+    const newIndex = sortedModels.findIndex((m) => m.id === over.id);
+    if (oldIndex === -1 || newIndex === -1) return;
+
+    const next = arrayMove(sortedModels, oldIndex, newIndex);
+    const nextOrder = next.map((m) => m.id);
+    setModelOrder(nextOrder);
+
+    try {
+      await fetch("/api/models/order", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          providerAlias,
+          kind: effectiveType,
+          order: nextOrder,
+        }),
+      });
+      window.dispatchEvent(new CustomEvent("modelOrderChanged", {
+        detail: { providerAlias, kind: effectiveType, order: nextOrder },
+      }));
+    } catch (err) {
+      console.error("Failed to save model order:", err);
+    }
+  };
+
+  const handleResetOrder = async () => {
+    setModelOrder([]);
+    try {
+      await fetch(`/api/models/order?providerAlias=${encodeURIComponent(providerAlias)}&kind=${encodeURIComponent(effectiveType)}`, {
+        method: "DELETE",
+      });
+      window.dispatchEvent(new CustomEvent("modelOrderChanged", {
+        detail: { providerAlias, kind: effectiveType, order: [] },
+      }));
+    } catch (err) {
+      console.error("Failed to reset model order:", err);
+    }
+  };
+
   return (
     <>
       <Card>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Models{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-semibold">Models{kindFilter ? ` — ${kindFilter.toUpperCase()}` : ""}</h2>
+            <span className="text-xs text-text-muted">({sortedModels.length})</span>
+          </div>
+          {modelOrder.length > 0 && (
+            <button
+              type="button"
+              onClick={handleResetOrder}
+              className="text-xs text-text-muted hover:text-primary transition-colors flex items-center gap-1"
+              title="Reset to default order"
+            >
+              <span className="material-symbols-outlined text-[14px]">restart_alt</span>
+              Reset order
+            </button>
+          )}
         </div>
         {testError && <p className="text-xs text-red-500 mb-3 break-words">{testError}</p>}
 
-        <div className="flex flex-wrap gap-3">
-          {displayModels.map((model) => {
-            const fullModel = `${providerAlias}/${model.id}`;
-            const existingAlias = Object.entries(modelAliases).find(([, m]) => m === fullModel)?.[0];
-            return (
-              <ModelRow
-                key={model.id}
-                model={model}
-                fullModel={`${providerAlias}/${model.id}`}
-                alias={existingAlias}
-                copied={copied}
-                onCopy={copy}
-                onSetAlias={(alias) => handleSetAlias(model.id, alias)}
-                onDeleteAlias={() => handleDeleteAlias(existingAlias)}
-                testStatus={modelTestResults[model.id]}
-                onTest={() => handleTestModel(model.id)}
-                isTesting={testingModelId === model.id}
-                isFree={model.isFree}
-                onDisable={() => handleDisableModel(model.id)}
-              />
-            );
-          })}
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <SortableContext items={sortedModels.map((m) => m.id)} strategy={rectSortingStrategy}>
+            <div className="flex flex-wrap gap-3">
+              {sortedModels.map((model) => {
+                const fullModel = `${providerAlias}/${model.id}`;
+                const isCustom = !!model.isCustom;
+                const existingAlias = Object.entries(modelAliases).find(([, m]) => m === fullModel)?.[0];
+                return (
+                  <SortableModelCard key={model.id} id={model.id}>
+                    {({ attributes, listeners }) => (
+                      <ModelRow
+                        model={model}
+                        fullModel={fullModel}
+                        alias={existingAlias}
+                        copied={copied}
+                        onCopy={copy}
+                        onSetAlias={(alias) => handleSetAlias(model.id, alias)}
+                        onDeleteAlias={isCustom ? () => handleDeleteCustomModel(model.id) : () => handleDeleteAlias(existingAlias)}
+                        testStatus={modelTestResults[model.id]}
+                        onTest={() => handleTestModel(model.id)}
+                        isTesting={testingModelId === model.id}
+                        isFree={model.isFree}
+                        isCustom={isCustom}
+                        onDisable={isCustom ? undefined : () => handleDisableModel(model.id)}
+                        dragHandleProps={{ ...attributes, ...listeners }}
+                      />
+                    )}
+                  </SortableModelCard>
+                );
+              })}
 
-          {myCustomModels.map((model) => (
-            <ModelRow
-              key={`${model.id}-${model.type}`}
-              model={{ id: model.id, name: model.name }}
-              fullModel={`${providerAlias}/${model.id}`}
-              copied={copied}
-              onCopy={copy}
-              onSetAlias={() => {}}
-              onDeleteAlias={() => handleDeleteCustomModel(model.id)}
-              testStatus={modelTestResults[model.id]}
-              onTest={() => handleTestModel(model.id)}
-              isTesting={testingModelId === model.id}
-              isCustom
-            />
-          ))}
+              <button
+                onClick={() => setShowAddCustomModel(true)}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-black/15 dark:border-white/15 text-xs text-text-muted hover:text-primary hover:border-primary/40 transition-colors"
+              >
+                <span className="material-symbols-outlined text-sm">add</span>
+                Add Model
+              </button>
 
-          <button
-            onClick={() => setShowAddCustomModel(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-dashed border-black/15 dark:border-white/15 text-xs text-text-muted hover:text-primary hover:border-primary/40 transition-colors"
-          >
-            <span className="material-symbols-outlined text-sm">add</span>
-            Add Model
-          </button>
-
-          {disabledDisplayModels.length > 0 && (
-            <div className="w-full mt-2">
-              <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
-              <div className="flex flex-wrap gap-2">
-                {disabledDisplayModels.map((model) => (
-                  <button
-                    key={model.id}
-                    onClick={() => handleEnableModel(model.id)}
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
-                    title="Restore model"
-                  >
-                    <span className="material-symbols-outlined text-[13px]">add</span>
-                    {model.id}
-                  </button>
-                ))}
-              </div>
+              {disabledDisplayModels.length > 0 && (
+                <div className="w-full mt-2">
+                  <p className="text-xs text-text-muted mb-2">Disabled models ({disabledDisplayModels.length}):</p>
+                  <div className="flex flex-wrap gap-2">
+                    {disabledDisplayModels.map((model) => (
+                      <button
+                        key={model.id}
+                        onClick={() => handleEnableModel(model.id)}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-dashed border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                        title="Restore model"
+                      >
+                        <span className="material-symbols-outlined text-[13px]">add</span>
+                        {model.id}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </SortableContext>
+        </DndContext>
       </Card>
 
       <AddCustomModelModal

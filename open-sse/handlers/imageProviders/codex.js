@@ -9,8 +9,14 @@ const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
 const CODEX_REF_DETAIL = "high";
-const CODEX_IMAGES_MAIN_MODEL = "gpt-5.4-mini";
-const CODEX_TOOL_IMAGE_MODELS = new Set(["gpt-image-1.5", "gpt-image-2"]);
+const CODEX_IMAGES_MAIN_MODEL = "gpt-5.5";
+const CODEX_TOOL_IMAGE_MODELS = new Set([
+  "gpt-image-1.5",
+  "gpt-image-2",
+  "gpt-image-2.5",
+  "gpt-image-2.5-flare",
+  "gpt-image-2.5-sunburst",
+]);
 
 // These failures describe the request/model contract, not account health.
 function isRequestScopedError(status, message) {

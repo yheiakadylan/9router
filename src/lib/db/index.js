@@ -55,6 +55,11 @@ export {
   getDisabledModels, getDisabledByProvider, disableModels, enableModels,
 } from "./repos/disabledModelsRepo.js";
 
+// Model order
+export {
+  getModelOrder, getAllModelOrders, setModelOrder, resetModelOrder,
+} from "./repos/modelOrderRepo.js";
+
 // Usage
 export {
   statsEmitter, trackPendingRequest, getActiveRequests,

@@ -454,7 +454,7 @@ describe("handleImageGenerationCore", () => {
 
     expect(result.success).toBe(true);
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.model).toBe("gpt-5.4-mini");
+    expect(requestBody.model).toBe("gpt-5.5");
     expect(requestBody.tools).toEqual([{
       type: "image_generation",
       action: "edit",

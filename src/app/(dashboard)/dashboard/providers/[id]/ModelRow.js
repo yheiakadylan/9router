@@ -1,7 +1,7 @@
 import PropTypes from "prop-types";
 import { CapacityBadges } from "@/shared/components";
 
-export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix }) {
+export default function ModelRow({ model, fullModel, alias, copied, onCopy, testStatus, isCustom, isFree, onDeleteAlias, onTest, isTesting, onDisable, caps, thinkingSuffix, dragHandleProps }) {
   const displayModel = thinkingSuffix ? `${fullModel}(${thinkingSuffix})` : fullModel;
   const borderColor = testStatus === "ok"
     ? "border-green-500/40"
@@ -18,6 +18,16 @@ export default function ModelRow({ model, fullModel, alias, copied, onCopy, test
   return (
     <div className={`group min-w-0 max-w-full rounded-lg border px-3 py-2 ${borderColor} hover:bg-sidebar/50`}>
       <div className="flex min-w-0 items-start gap-2 sm:items-center">
+        {dragHandleProps && (
+          <button
+            {...dragHandleProps}
+            type="button"
+            title="Drag to reorder"
+            className="cursor-grab active:cursor-grabbing p-0.5 -ml-1 text-text-muted/40 hover:text-primary transition-colors shrink-0"
+          >
+            <span className="material-symbols-outlined text-[16px] select-none">drag_indicator</span>
+          </button>
+        )}
         <span
           className="material-symbols-outlined shrink-0 text-base"
           style={iconColor ? { color: iconColor } : undefined}

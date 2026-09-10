@@ -7,6 +7,7 @@ import {
 } from "@/shared/constants/providers";
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
+import { getAllModelOrders } from "@/lib/db";
 import { resolveKiroModels } from "open-sse/services/kiroModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
@@ -283,6 +284,13 @@ export async function buildModelsList(kindFilter, options = {}) {
   }
   const isDisabled = (alias, modelId) => Array.isArray(disabledByAlias[alias]) && disabledByAlias[alias].includes(modelId);
 
+  let allModelOrders = {};
+  try {
+    allModelOrders = await getAllModelOrders();
+  } catch (e) {
+    console.log("Could not fetch model orders");
+  }
+
   const activeConnectionByProvider = new Map();
   for (const conn of connections) {
     if (!activeConnectionByProvider.has(conn.provider)) {
@@ -314,7 +322,19 @@ export async function buildModelsList(kindFilter, options = {}) {
     for (const [alias, providerModels] of Object.entries(PROVIDER_MODELS)) {
       const providerId = aliasToProviderId[alias] || alias;
       if (!providerMatchesKinds(providerId, kindFilter)) continue;
-      for (const model of providerModels) {
+      const sortedProviderModels = [...providerModels].sort((a, b) => {
+        const kindA = modelKind(a);
+        const kindB = modelKind(b);
+        const orderA = allModelOrders[`${alias}:${kindA}`] || allModelOrders[`${providerId}:${kindA}`] || [];
+        const orderB = allModelOrders[`${alias}:${kindB}`] || allModelOrders[`${providerId}:${kindB}`] || [];
+        const indexA = Array.isArray(orderA) ? orderA.indexOf(a.id) : -1;
+        const indexB = Array.isArray(orderB) ? orderB.indexOf(b.id) : -1;
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+        return 0;
+      });
+      for (const model of sortedProviderModels) {
         if (!kindFilter.includes(modelKind(model))) continue;
         if (isDisabled(alias, model.id)) continue;
         models.push({
@@ -461,6 +481,19 @@ export async function buildModelsList(kindFilter, options = {}) {
         .filter((modelId) => typeof modelId === "string" && modelId.trim() !== "");
 
       const mergedModelIds = Array.from(new Set([...modelIds, ...customModelIds, ...aliasModelIds]));
+
+      mergedModelIds.sort((a, b) => {
+        const kindA = customModelKindById.get(a) || liveModelKindById.get(a) || staticModelKindById.get(a) || inferKindFromUnknownModelId(a);
+        const kindB = customModelKindById.get(b) || liveModelKindById.get(b) || staticModelKindById.get(b) || inferKindFromUnknownModelId(b);
+        const orderA = allModelOrders[`${outputAlias}:${kindA}`] || allModelOrders[`${staticAlias}:${kindA}`] || allModelOrders[`${providerId}:${kindA}`] || [];
+        const orderB = allModelOrders[`${outputAlias}:${kindB}`] || allModelOrders[`${staticAlias}:${kindB}`] || allModelOrders[`${providerId}:${kindB}`] || [];
+        const indexA = Array.isArray(orderA) ? orderA.indexOf(a) : -1;
+        const indexB = Array.isArray(orderB) ? orderB.indexOf(b) : -1;
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+        return 0;
+      });
 
       for (const modelId of mergedModelIds) {
         // Resolve kind: prefer custom/live metadata, then static, then ID heuristics.

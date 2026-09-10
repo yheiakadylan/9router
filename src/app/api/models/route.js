@@ -4,6 +4,7 @@ import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { AI_MODELS } from "@/shared/constants/config";
 import { getProviderAlias } from "@/shared/constants/providers";
 import { getCapabilitiesForModel } from "open-sse/providers/capabilities.js";
+import { getAllModelOrders } from "@/lib/db";
 
 // GET /api/models - Get models with aliases
 export async function GET() {
@@ -63,6 +64,21 @@ export async function GET() {
         },
       });
     }
+
+    const allOrders = await getAllModelOrders().catch(() => ({}));
+    models.sort((a, b) => {
+      const aliasA = getProviderAlias(a.provider) || a.provider;
+      const aliasB = getProviderAlias(b.provider) || b.provider;
+      if (aliasA === aliasB) {
+        const order = allOrders[`${aliasA}:llm`] || allOrders[`${a.provider}:llm`] || [];
+        const indexA = Array.isArray(order) ? order.indexOf(a.model) : -1;
+        const indexB = Array.isArray(order) ? order.indexOf(b.model) : -1;
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+      }
+      return 0;
+    });
 
     return NextResponse.json({ models });
   } catch (error) {

@@ -339,7 +339,7 @@ function getImageItems(payload) {
   return Array.isArray(data) ? data : [];
 }
 
-function modelOptions(connections, disabled, kind) {
+function modelOptions(connections, disabled, kind, modelOrders = {}) {
   const activeProviders = new Set(
     connections.filter((connection) => connection.isActive !== false).map((connection) => connection.provider),
   );
@@ -347,15 +347,30 @@ function modelOptions(connections, disabled, kind) {
   return providers.flatMap((provider) => {
     if (!provider.noAuth && activeProviders.size > 0 && !activeProviders.has(provider.id)) return [];
     const alias = getProviderAlias(provider.id) || provider.id;
-    return getModelsByProviderId(provider.id)
+    const providerOrder = modelOrders[`${alias}:${kind}`] || modelOrders[`${provider.id}:${kind}`] || [];
+    const list = getModelsByProviderId(provider.id)
       .filter((model) => kind === "image" ? getModelKind(model) === "image" : getModelKind(model) !== "image")
       .filter((model) => !(disabled[alias] || disabled[provider.id] || []).includes(model.id))
       .map((model) => ({
         id: `${alias}/${model.id}`,
         name: model.name || model.id,
+        rawId: model.id,
         provider: provider.id,
         alias,
       }));
+
+    if (Array.isArray(providerOrder) && providerOrder.length > 0) {
+      list.sort((a, b) => {
+        const indexA = providerOrder.indexOf(a.rawId);
+        const indexB = providerOrder.indexOf(b.rawId);
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB;
+        if (indexA !== -1) return -1;
+        if (indexB !== -1) return 1;
+        return 0;
+      });
+    }
+
+    return list;
   });
 }
 
@@ -506,23 +521,36 @@ export default function ImageGenerationPage() {
     let cancelled = false;
     async function load() {
       try {
-        const [providersRes, disabledRes, keysRes] = await Promise.all([
+        const [providersRes, disabledRes, keysRes, orderRes] = await Promise.all([
           fetch("/api/providers", { cache: "no-store" }),
           fetch("/api/models/disabled", { cache: "no-store" }),
           fetch("/api/keys", { cache: "no-store" }),
+          fetch("/api/models/order", { cache: "no-store" }).catch(() => null),
         ]);
         const providersData = await providersRes.json().catch(() => ({}));
         const disabledData = await disabledRes.json().catch(() => ({}));
         const keysData = await keysRes.json().catch(() => ({}));
+        const orderData = orderRes && orderRes.ok ? await orderRes.json().catch(() => ({})) : {};
         if (cancelled) return;
         const connections = providersData.connections || [];
         const disabled = disabledData.disabled || {};
-        const nextChatModels = modelOptions(connections, disabled, "llm");
-        const nextImageModels = modelOptions(connections, disabled, "image");
+        const modelOrders = orderData.orders || {};
+        const nextChatModels = modelOptions(connections, disabled, "llm", modelOrders);
+        const nextImageModels = modelOptions(connections, disabled, "image", modelOrders);
         setChatModels(nextChatModels);
         setImageModels(nextImageModels);
-        setTextModel(nextChatModels.find((model) => model.id === "cx/gpt-5.5")?.id || nextChatModels[0]?.id || "");
-        setImageModel(nextImageModels.find((model) => model.id === "cx/gpt-5.5-image")?.id || nextImageModels[0]?.id || "");
+        const hasCustomChatOrder = Object.keys(modelOrders).some((k) => k.endsWith(":llm") && modelOrders[k]?.length > 0);
+        const hasCustomImageOrder = Object.keys(modelOrders).some((k) => k.endsWith(":image") && modelOrders[k]?.length > 0);
+        setTextModel(
+          hasCustomChatOrder
+            ? (nextChatModels[0]?.id || "")
+            : (nextChatModels.find((model) => model.id === "cx/gpt-5.5")?.id || nextChatModels[0]?.id || "")
+        );
+        setImageModel(
+          hasCustomImageOrder
+            ? (nextImageModels[0]?.id || "")
+            : (nextImageModels.find((model) => model.id === "cx/gpt-5.5-image")?.id || nextImageModels[0]?.id || "")
+        );
         setApiKey((keysData.keys || []).find((key) => key.isActive !== false)?.key || "");
       } catch (loadError) {
         if (!cancelled) setError(loadError.message || "Failed to load models");

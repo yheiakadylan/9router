@@ -3,13 +3,14 @@ export function encodeDataUri(mimeType, base64) {
   return `data:${mimeType};base64,${base64}`;
 }
 
-// Parse a base64 data URI → { mimeType, base64 }, or null if not a data URI.
-// [\s\S] tolerates newlines inside the base64 payload.
-const DATA_URI_RE = /^data:([^;]+);base64,([\s\S]+)$/;
 export function parseDataUri(url) {
-  if (typeof url !== "string") return null;
-  const m = url.match(DATA_URI_RE);
-  return m ? { mimeType: m[1], base64: m[2] } : null;
+  if (typeof url !== "string" || !url.startsWith("data:")) return null;
+  const base64Marker = ";base64,";
+  const markerIdx = url.indexOf(base64Marker);
+  if (markerIdx === -1) return null;
+  const mimeType = url.slice(5, markerIdx).trim();
+  const base64 = url.slice(markerIdx + base64Marker.length).trim();
+  return mimeType && base64 ? { mimeType, base64 } : null;
 }
 
 import { lookup } from "node:dns/promises";

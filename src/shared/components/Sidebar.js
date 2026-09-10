@@ -11,6 +11,7 @@ import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import Button from "./Button";
 import { ConfirmModal } from "./Modal";
 import NineRemotePromoModal from "./NineRemotePromoModal";
+import { isImageGenEnabled, subscribeImageGenAccess } from "@/shared/utils/imageGenAccess";
 
 // const VISIBLE_MEDIA_KINDS = ["embedding", "image", "imageToText", "tts", "stt", "webSearch", "webFetch", "video", "music"];
 const VISIBLE_MEDIA_KINDS = ["embedding", "image", "video", "tts", "stt"];
@@ -21,6 +22,7 @@ const navItems = [
   { href: "/dashboard/endpoint", label: "Endpoint & Key", icon: "api" },
   { href: "/dashboard/providers", label: "Providers", icon: "dns" },
   { href: "/dashboard/basic-chat", label: "Basic Chat", icon: "chat" },
+  { href: "/dashboard/image-gen", label: "Image Gen", icon: "image" },
   { href: "/dashboard/combos", label: "Combo & Vision Adapter", icon: "layers" },
   { href: "/dashboard/usage", label: "Usage", icon: "bar_chart" },
   { href: "/dashboard/quota", label: "Quota Tracker", icon: "data_usage" },
@@ -49,6 +51,8 @@ export default function Sidebar({ onClose }) {
   const [isUpdating, setIsUpdating] = useState(false);
   const [shutdownCountdown, setShutdownCountdown] = useState(0);
   const [enableTranslator, setEnableTranslator] = useState(false);
+  const [imageGenEnabled, setImageGenEnabled] = useState(() => isImageGenEnabled());
+  const [imageGenPulse, setImageGenPulse] = useState(false);
   const { copied, copy } = useCopyToClipboard(2000);
 
   const INSTALL_CMD = UPDATER_CONFIG.installCmdLatest;
@@ -58,6 +62,18 @@ export default function Sidebar({ onClose }) {
       .then(res => res.json())
       .then(data => { if (data.enableTranslator) setEnableTranslator(true); })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let pulseTimer;
+    function handleImageGenAccess(enabled) {
+      setImageGenEnabled(enabled);
+      setImageGenPulse(enabled);
+      if (pulseTimer) clearTimeout(pulseTimer);
+      if (enabled) pulseTimer = setTimeout(() => setImageGenPulse(false), 2800);
+    }
+    const unsubscribe = subscribeImageGenAccess(handleImageGenAccess);
+    return () => { unsubscribe(); if (pulseTimer) clearTimeout(pulseTimer); };
   }, []);
 
   // Lazy check for new npm version on mount
@@ -156,7 +172,7 @@ export default function Sidebar({ onClose }) {
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
-          {navItems.map((item) => (
+          {navItems.filter((item) => item.href !== "/dashboard/image-gen" || imageGenEnabled).map((item) => (
             <Link
               key={item.href}
               href={item.href}
@@ -165,7 +181,9 @@ export default function Sidebar({ onClose }) {
                 "flex items-center gap-3 px-3 py-1 rounded-lg transition-all group",
                 isActive(item.href)
                   ? "bg-primary/10 text-primary"
-                  : "text-text-muted hover:bg-surface-2 hover:text-text-main"
+                  : imageGenPulse && item.href === "/dashboard/image-gen"
+                    ? "animate-pulse bg-primary/15 text-primary ring-1 ring-primary/40"
+                    : "text-text-muted hover:bg-surface-2 hover:text-text-main"
               )}
             >
               <span

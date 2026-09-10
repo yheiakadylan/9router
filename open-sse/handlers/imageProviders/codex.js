@@ -47,20 +47,18 @@ function resolveCodexImageModels(model) {
 }
 
 function decodeBase64Image(input) {
-  const normalized = String(input || "").replace(/\s+/g, "");
-  if (!normalized || normalized.length % 4 === 1 || !/^[A-Za-z0-9+/]+={0,2}$/.test(normalized)) {
+  if (!input || typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+
+  try {
+    const headerBuffer = Buffer.from(trimmed.slice(0, 64), "base64");
+    if (!headerBuffer.length) return null;
+    const mimeType = detectImageMime(headerBuffer);
+    return mimeType ? { base64: trimmed, mimeType } : null;
+  } catch {
     return null;
   }
-
-  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
-  const buffer = Buffer.from(padded, "base64");
-  if (!buffer.length) return null;
-
-  const canonical = buffer.toString("base64").replace(/=+$/, "");
-  if (canonical !== normalized.replace(/=+$/, "")) return null;
-
-  const mimeType = detectImageMime(buffer);
-  return mimeType ? { base64: buffer.toString("base64"), mimeType } : null;
 }
 
 async function toDataUrl(input, label) {

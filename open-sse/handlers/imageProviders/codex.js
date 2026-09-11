@@ -102,12 +102,28 @@ function buildContent(prompt, refs, detail = CODEX_REF_DETAIL) {
   return content;
 }
 
-// Parse Codex SSE stream → final base64 image. Optional callbacks for client streaming.
+function extractStreamError(data) {
+  if (!data) return null;
+  if (typeof data === "string") return data;
+  if (data.error?.message) return data.error.message;
+  if (data.response?.error?.message) return data.response.error.message;
+  if (data.item?.error?.message) return data.item.error.message;
+  if (data.response?.status_details?.error?.message) return data.response.status_details.error.message;
+  if (typeof data.error === "string") return data.error;
+  if (typeof data.message === "string") return data.message;
+  if (data.error?.code) return `OpenAI error: ${data.error.code}`;
+  if (data.response?.error?.code) return `OpenAI error: ${data.response.error.code}`;
+  return null;
+}
+
+// Parse Codex SSE stream → final base64 image or upstream error. Optional callbacks for client streaming.
 async function parseStream(response, log, callbacks = {}) {
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let imageB64 = null;
+  let upstreamError = null;
+  let assistantText = "";
   let lastEvent = null;
   let bytesReceived = 0;
   let lastProgressLogMs = 0;
@@ -156,18 +172,61 @@ async function parseStream(response, log, callbacks = {}) {
         } catch {}
       }
 
+      if ((eventName === "error" || eventName === "response.failed") && dataStr) {
+        try {
+          const data = JSON.parse(dataStr);
+          const err = extractStreamError(data);
+          if (err) {
+            upstreamError = err;
+            log?.warn?.("IMAGE", `codex stream error: ${err}`);
+          }
+        } catch {
+          if (dataStr) upstreamError = dataStr;
+        }
+      }
+
+      if (eventName === "response.output_text.delta" && dataStr) {
+        try {
+          const data = JSON.parse(dataStr);
+          if (data?.delta) {
+            assistantText += data.delta;
+          }
+        } catch {}
+      }
+
       if (eventName === "response.output_item.done" && dataStr) {
         try {
           const data = JSON.parse(dataStr);
           const item = data?.item;
-          if (item?.type === "image_generation_call" && item.result) {
-            imageB64 = item.result;
+          if (item?.type === "image_generation_call") {
+            if (item.result) {
+              imageB64 = item.result;
+            } else if (item.error || item.status === "failed") {
+              const err = extractStreamError(item);
+              if (err) {
+                upstreamError = err;
+                log?.warn?.("IMAGE", `codex image tool error: ${err}`);
+              }
+            }
+          } else if (item?.type === "message") {
+            const textParts = item.content
+              ?.map((c) => (typeof c === "string" ? c : c?.text || c?.output_text))
+              .filter(Boolean);
+            if (textParts && textParts.length > 0) {
+              assistantText = textParts.join(" ").trim();
+            }
           }
         } catch {}
       }
     }
   }
-  return imageB64;
+
+  let finalError = upstreamError;
+  if (!imageB64 && !finalError && assistantText) {
+    finalError = `Codex returned text instead of an image: "${assistantText.trim().slice(0, 300)}"`;
+  }
+
+  return { b64: imageB64, error: finalError };
 }
 
 // SSE Response that pipes codex progress + partial + done events to client
@@ -185,14 +244,14 @@ function buildSseResponse(providerResponse, log, onSuccess, onComplete) {
         } catch {}
       };
       try {
-        const b64 = await parseStream(providerResponse, log, {
+        const { b64, error: upstreamError } = await parseStream(providerResponse, log, {
           onFirstChunk: (timestamp) => { firstChunkAt = timestamp; },
           onProgress: (info) => send("progress", info),
           onPartialImage: (info) => send("partial_image", info),
         });
         const completedAt = Date.now();
         if (!b64) {
-          const message = "Codex did not return an image. Account may not be entitled (Plus/Pro required).";
+          const message = upstreamError || "Codex did not return an image. Account may not be entitled (Plus/Pro required) or request was rejected.";
           send("error", { message });
           notifyComplete({ success: false, error: message, firstChunkAt, completedAt });
         } else {
@@ -281,9 +340,9 @@ export default {
     if (streamToClient) {
       return { sseResponse: buildSseResponse(response, log, onRequestSuccess, onStreamComplete) };
     }
-    const b64 = await parseStream(response, log);
+    const { b64, error: upstreamError } = await parseStream(response, log);
     if (!b64) {
-      throw new Error("Codex did not return an image. Account may not be entitled (Plus/Pro required).");
+      throw new Error(upstreamError || "Codex did not return an image. Account may not be entitled (Plus/Pro required) or request was rejected.");
     }
     return { created: nowSec(), data: [{ b64_json: b64 }] };
   },

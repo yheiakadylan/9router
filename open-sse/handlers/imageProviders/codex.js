@@ -2,10 +2,11 @@
 import { randomUUID } from "node:crypto";
 import { nowSec } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
-import { CODEX_CLIENT_VERSION } from "../../config/codexConstants.js";
+import { CODEX_CLI_VERSION } from "../../config/appConstants.js";
 import { detectImageMime, encodeDataUri, fetchImageAsBase64, parseDataUri } from "../../translator/concerns/image.js";
 
 const CODEX_RESPONSES_URL = PROVIDERS["codex"].baseUrl;
+const CODEX_USER_AGENT = `codex_cli_rs/${CODEX_CLI_VERSION}`;
 const CODEX_ORIGINATOR = "codex_cli_rs";
 const CODEX_MODEL_SUFFIX = "-image";
 const CODEX_REF_DETAIL = "high";
@@ -17,7 +18,6 @@ const CODEX_TOOL_IMAGE_MODELS = new Set([
   "gpt-image-2.5-flare",
   "gpt-image-2.5-sunburst",
 ]);
-
 // These failures describe the request/model contract, not account health.
 function isRequestScopedError(status, message) {
   if (Number(status) !== 400) return false;
@@ -293,8 +293,8 @@ export default {
       "content-type": "application/json",
       "originator": CODEX_ORIGINATOR,
       "session_id": randomUUID(),
-      "user-agent": `${CODEX_ORIGINATOR}/${CODEX_CLIENT_VERSION}`,
-      "version": CODEX_CLIENT_VERSION,
+      "user-agent": CODEX_USER_AGENT,
+      "version": CODEX_CLI_VERSION,
       "x-client-request-id": randomUUID(),
     };
   },

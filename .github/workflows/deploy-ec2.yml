@@ -70,10 +70,20 @@ jobs:
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml pull
 
+            # G? container dang chi?m port 20128 (n?u có)
+            PORT_CONTAINERS=$(sudo docker ps -q --filter "publish=20128" 2>/dev/null || true)
+            if [ -n "$PORT_CONTAINERS" ]; then
+              echo "Cleaning up containers on port 20128: $PORT_CONTAINERS"
+              sudo docker rm -f $PORT_CONTAINERS 2>/dev/null || true
+            fi
+
             COMPOSE_PROJECT=$(sudo docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' 9router 2>/dev/null || true)
             if [ -z "$COMPOSE_PROJECT" ] || [ "$COMPOSE_PROJECT" = "<no value>" ]; then
               sudo docker rm -f 9router 2>/dev/null || true
             fi
+
+            sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
+              docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
 
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml up -d --remove-orphans

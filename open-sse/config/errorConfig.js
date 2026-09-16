@@ -28,10 +28,11 @@ export const DEFAULT_ERROR_MESSAGES = {
   504: "Gateway timeout"
 };
 
-// Exponential backoff config for rate limits
+// Exponential backoff for repeated transient/provider failures:
+// 2s, 4s, 8s, 16s, then cap each cooldown at 30s.
 export const BACKOFF_CONFIG = {
   base: 2000,
-  max: 5 * 60 * 1000,
+  max: 30 * 1000,
   maxLevel: 15
 };
 
@@ -72,6 +73,7 @@ export const ERROR_RULES = [
   { status: 402, cooldownMs: COOLDOWN.long },
   { status: 403, cooldownMs: COOLDOWN.long },
   { status: 404, cooldownMs: COOLDOWN.long },
+  { status: 503, backoff: true },
   { status: 429, backoff: true },
 ];
 

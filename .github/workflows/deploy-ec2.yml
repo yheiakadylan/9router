@@ -67,37 +67,54 @@ jobs:
             cd ~/9router
             echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
             mkdir -p "$HOME/.9router"
-            sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
-              docker compose -f docker-compose.ec2.yml pull
+
+            # Ð?m b?o có swapfile d? VPS không b? OOM (tràn RAM)
+            if ! swapon --show | grep -q "/swapfile"; then
+              if [ ! -f /swapfile ]; then
+                echo "Creating 2G swapfile..."
+                sudo fallocate -l 2G /swapfile 2>/dev/null || sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 2>/dev/null || true
+                sudo chmod 600 /swapfile 2>/dev/null || true
+                sudo mkswap /swapfile 2>/dev/null || true
+              fi
+              sudo swapon /swapfile 2>/dev/null || true
+            fi
+
+            echo "=== System resources ==="
+            free -h
 
             echo "=== Checking port 20128 before cleanup ==="
             sudo ss -tulpn | grep 20128 || true
 
-            # 1. G? docker compose cu (n?u có)
+            # D?ng n?u có PM2 ho?c systemd dang qu?n lý 9router
+            if command -v pm2 >/dev/null 2>&1; then
+              pm2 stop all 2>/dev/null || true
+              pm2 delete all 2>/dev/null || true
+            fi
+            sudo systemctl stop 9router 2>/dev/null || true
+            sudo systemctl disable 9router 2>/dev/null || true
+
+            # T?t ti?n trình next-server ho?c process chi?m port 20128
+            sudo pkill -15 -f "next-server" 2>/dev/null || true
+            sleep 1
+            sudo pkill -9 -f "next-server" 2>/dev/null || true
+
+            # D?n d?p docker container cu
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
-
-            # 2. Xóa b?t k? container nào map port 20128 ho?c có tên 9router
             PORT_CONTAINERS=$(sudo docker ps -q --filter "publish=20128" 2>/dev/null || true)
             if [ -n "$PORT_CONTAINERS" ]; then
-              echo "Cleaning up containers on port 20128: $PORT_CONTAINERS"
               sudo docker rm -f $PORT_CONTAINERS 2>/dev/null || true
             fi
             sudo docker rm -f 9router 2>/dev/null || true
-
-            # 3. Di?t docker-proxy m? côi ho?c ti?n trình host chi?m port 20128
-            sudo fuser -k 20128/tcp 2>/dev/null || true
             sudo pkill -9 -f "docker-proxy.*20128" 2>/dev/null || true
-            HOST_PIDS=$(sudo ss -tulpn 'sport = :20128' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)
-            if [ -n "$HOST_PIDS" ]; then
-              echo "Killing host processes on port 20128: $HOST_PIDS"
-              sudo kill -9 $HOST_PIDS 2>/dev/null || true
-            fi
 
             sleep 2
 
-            echo "=== Port 20128 status after cleanup ==="
+            echo "=== Port 20128 after cleanup ==="
             sudo ss -tulpn | grep 20128 || echo "Port 20128 is completely FREE"
+
+            sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
+              docker compose -f docker-compose.ec2.yml pull
 
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml up -d --remove-orphans

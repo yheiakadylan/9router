@@ -68,7 +68,7 @@ jobs:
             echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
             mkdir -p "$HOME/.9router"
 
-            # Ð?m b?o có swapfile d? VPS không b? OOM (tràn RAM)
+            # Ð?m b?o có swapfile d? VPS không b? OOM
             if ! swapon --show | grep -q "/swapfile"; then
               if [ ! -f /swapfile ]; then
                 echo "Creating 2G swapfile..."
@@ -85,20 +85,16 @@ jobs:
             echo "=== Checking port 20128 before cleanup ==="
             sudo ss -tulpn | grep 20128 || true
 
-            # D?ng n?u có PM2 ho?c systemd dang qu?n lý 9router
+            # 1. D?ng n?u có PM2 ho?c systemd dang qu?n lý 9router
             if command -v pm2 >/dev/null 2>&1; then
               pm2 stop all 2>/dev/null || true
               pm2 delete all 2>/dev/null || true
+              pm2 save 2>/dev/null || true
             fi
             sudo systemctl stop 9router 2>/dev/null || true
             sudo systemctl disable 9router 2>/dev/null || true
 
-            # T?t ti?n trình next-server ho?c process chi?m port 20128
-            sudo pkill -15 -f "next-server" 2>/dev/null || true
-            sleep 1
-            sudo pkill -9 -f "next-server" 2>/dev/null || true
-
-            # D?n d?p docker container cu
+            # 2. D?n d?p b?t k? container Docker nào map port 20128 ho?c có tên 9router
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
             PORT_CONTAINERS=$(sudo docker ps -q --filter "publish=20128" 2>/dev/null || true)
@@ -106,7 +102,15 @@ jobs:
               sudo docker rm -f $PORT_CONTAINERS 2>/dev/null || true
             fi
             sudo docker rm -f 9router 2>/dev/null || true
-            sudo pkill -9 -f "docker-proxy.*20128" 2>/dev/null || true
+
+            # 3. Gi?i phóng an toàn port 20128 b?ng PID c? th?
+            PORT_PIDS=$(sudo lsof -t -i:20128 2>/dev/null || true)
+            for p in $PORT_PIDS; do
+              if [ "$p" != "$$" ]; then
+                echo "Terminating process on port 20128: $p"
+                sudo kill -9 "$p" 2>/dev/null || true
+              fi
+            done
 
             sleep 2
 
@@ -123,6 +127,7 @@ jobs:
               if curl -fsS http://127.0.0.1:20128/api/health >/dev/null; then
                 sudo docker image prune -f
                 sudo docker ps --filter name=9router
+                echo "DEPLOY SUCCESSFUL!"
                 exit 0
               fi
               sleep 2

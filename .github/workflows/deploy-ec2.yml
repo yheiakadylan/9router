@@ -70,20 +70,34 @@ jobs:
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml pull
 
-            # G? container dang chi?m port 20128 (n?u có)
+            echo "=== Checking port 20128 before cleanup ==="
+            sudo ss -tulpn | grep 20128 || true
+
+            # 1. G? docker compose cu (n?u có)
+            sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
+              docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
+
+            # 2. Xóa b?t k? container nào map port 20128 ho?c có tên 9router
             PORT_CONTAINERS=$(sudo docker ps -q --filter "publish=20128" 2>/dev/null || true)
             if [ -n "$PORT_CONTAINERS" ]; then
               echo "Cleaning up containers on port 20128: $PORT_CONTAINERS"
               sudo docker rm -f $PORT_CONTAINERS 2>/dev/null || true
             fi
+            sudo docker rm -f 9router 2>/dev/null || true
 
-            COMPOSE_PROJECT=$(sudo docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' 9router 2>/dev/null || true)
-            if [ -z "$COMPOSE_PROJECT" ] || [ "$COMPOSE_PROJECT" = "<no value>" ]; then
-              sudo docker rm -f 9router 2>/dev/null || true
+            # 3. Di?t docker-proxy m? côi ho?c ti?n trình host chi?m port 20128
+            sudo fuser -k 20128/tcp 2>/dev/null || true
+            sudo pkill -9 -f "docker-proxy.*20128" 2>/dev/null || true
+            HOST_PIDS=$(sudo ss -tulpn 'sport = :20128' 2>/dev/null | grep -o 'pid=[0-9]*' | cut -d= -f2 || true)
+            if [ -n "$HOST_PIDS" ]; then
+              echo "Killing host processes on port 20128: $HOST_PIDS"
+              sudo kill -9 $HOST_PIDS 2>/dev/null || true
             fi
 
-            sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
-              docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
+            sleep 2
+
+            echo "=== Port 20128 status after cleanup ==="
+            sudo ss -tulpn | grep 20128 || echo "Port 20128 is completely FREE"
 
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml up -d --remove-orphans

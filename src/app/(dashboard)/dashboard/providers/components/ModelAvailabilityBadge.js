@@ -175,12 +175,13 @@ export default function ModelAvailabilityBadge() {
                   <div key={provider}>
                     <p className="text-xs font-semibold text-text-main mb-1.5 capitalize">{provider}</p>
                     <div className="flex flex-col gap-1">
-                      {provModels.map((m) => {
+                      {provModels.map((m, idx) => {
                         const status = STATUS_CONFIG[m.status] || STATUS_CONFIG.unknown;
                         const isClearing = clearing === `${m.provider}:${m.model}`;
+                        const displayModelName = m.model === "__all" ? "All models" : m.model;
                         return (
                           <div
-                            key={`${m.provider}-${m.model}`}
+                            key={`${m.provider}-${m.model}-${m.connectionId || idx}`}
                             className="flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-surface/30"
                           >
                             <div className="flex items-center gap-1.5 min-w-0">
@@ -190,7 +191,12 @@ export default function ModelAvailabilityBadge() {
                               >
                                 {status.icon}
                               </span>
-                              <span className="font-mono text-xs text-text-main truncate">{m.model}</span>
+                              <div className="flex flex-col min-w-0">
+                                <span className="font-mono text-xs text-text-main truncate">{displayModelName}</span>
+                                {m.connectionName && (
+                                  <span className="text-[10px] text-text-muted truncate">{m.connectionName}</span>
+                                )}
+                              </div>
                             </div>
                             {m.status === "cooldown" && (
                               <Button

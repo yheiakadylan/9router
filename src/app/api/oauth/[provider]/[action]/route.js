@@ -164,12 +164,13 @@ export async function GET(request, { params }) {
       if (!appPort) {
         return NextResponse.json({ error: "Missing app_port" }, { status: 400 });
       }
+      const appOrigin = searchParams.get("app_origin");
       const state = searchParams.get("state");
       const codeVerifier = searchParams.get("code_verifier");
       const redirectUri = searchParams.get("redirect_uri");
       const result = provider === "xai"
-        ? await startXaiProxy(Number(appPort))
-        : await startCodexProxy(Number(appPort));
+        ? await startXaiProxy(Number(appPort), appOrigin)
+        : await startCodexProxy(Number(appPort), appOrigin);
       let serverSide = false;
       if (result.success && state && codeVerifier && redirectUri) {
         serverSide = provider === "xai"

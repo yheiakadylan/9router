@@ -291,13 +291,23 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
-      // Authorization code flow - build redirect URI (some providers require fixed ports)
+      // Authorization code flow - build redirect URI (some providers require fixed ports or loopback)
+      const isLoopbackHost = typeof window !== "undefined" &&
+        (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+      const isGoogleDesktop = provider === "antigravity" || provider === "gemini-cli";
+
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
       if (provider === "codex") {
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
+      } else if (isGoogleDesktop && !isLoopbackHost) {
+        // Google Desktop OAuth clients (Antigravity & Gemini CLI) strictly reject remote origins
+        // (domains, public IPs, reverse proxies) with redirect_uri_mismatch.
+        // Using loopback http://localhost:8080/callback allows Google auth to proceed,
+        // and user can paste the code or full redirected URL from the browser.
+        redirectUri = "http://localhost:8080/callback";
       } else {
         redirectUri = `${window.location.origin}/callback`;
       }
@@ -319,6 +329,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         try {
           const proxyUrl = new URL(`/api/oauth/codex/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
+          proxyUrl.searchParams.set("app_origin", window.location.origin);
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
           proxyUrl.searchParams.set("redirect_uri", redirectUri);
@@ -338,6 +349,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         try {
           const proxyUrl = new URL(`/api/oauth/xai/start-proxy`, window.location.origin);
           proxyUrl.searchParams.set("app_port", appPort);
+          proxyUrl.searchParams.set("app_origin", window.location.origin);
           proxyUrl.searchParams.set("state", data.state);
           proxyUrl.searchParams.set("code_verifier", data.codeVerifier);
           proxyUrl.searchParams.set("redirect_uri", redirectUri);
@@ -380,8 +392,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         if (!popupRef.current) {
           setStep("input");
         }
-      } else if (!isLocalhost || provider === "codex" || provider === "xai") {
-        // Non-localhost or proxy failed: manual input mode
+      } else if (!isLoopbackHost || provider === "codex" || provider === "xai" || (isGoogleDesktop && !isLoopbackHost)) {
+        // Non-localhost or fixed loopback provider without active proxy: manual input mode
         setStep("input");
         window.open(data.authUrl, "_blank");
       } else {
@@ -627,20 +639,39 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         return;
       }
 
-      const url = new URL(input);
-      const code = url.searchParams.get("code");
-      const token = url.searchParams.get("token");
-      const state = url.searchParams.get("state");
-      const errorParam = url.searchParams.get("error");
+      let code = null;
+      let token = null;
+      let state = authData?.state || null;
 
-      if (errorParam) {
-        throw new Error(url.searchParams.get("error_description") || errorParam);
+      if (input.includes("://") || input.startsWith("/") || input.includes("?")) {
+        try {
+          const url = new URL(input.startsWith("/") ? `http://localhost${input}` : input);
+          code = url.searchParams.get("code");
+          token = url.searchParams.get("token");
+          state = url.searchParams.get("state") || state;
+          const errorParam = url.searchParams.get("error");
+
+          if (errorParam) {
+            throw new Error(url.searchParams.get("error_description") || errorParam);
+          }
+        } catch (e) {
+          if (e.message && !e.message.includes("Invalid URL")) throw e;
+        }
+      }
+
+      // If no code extracted from URL, treat raw input as authorization code or token
+      if (!code && !token) {
+        if (!input.includes("://") && !input.includes("?")) {
+          code = input;
+        }
       }
 
       if (!code && !token) {
         throw new Error(
           provider === "xai"
             ? "Paste the callback URL or copied xAI code"
+            : (provider === "antigravity" || provider === "gemini-cli")
+              ? "No authorization code found. Paste the full redirected URL or code from Google."
             : provider === "kimchi"
               ? "No Kimchi token found in URL"
               : "No authorization code found in URL"
@@ -673,12 +704,15 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
   const isKimchiProvider = provider === "kimchi";
+  const isGoogleDesktopProvider = provider === "antigravity" || provider === "gemini-cli";
   const deviceLoginUrl = deviceData?.verification_uri_complete || deviceData?.verification_uri || "";
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
   const manualPlaceholder = isXaiProvider
     ? "http://127.0.0.1:56121/callback?code=... or copied code"
     : provider === "codex"
       ? "http://localhost:1455/auth/callback?code=...&state=..."
+    : isGoogleDesktopProvider
+      ? "http://localhost:8080/callback?code=... or authorization code"
     : isKimchiProvider
       ? `${placeholderUrl.replace("code=...", "token=...")} or copied token`
       : placeholderUrl;
@@ -801,6 +835,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
                 <p className="text-xs text-text-muted mb-2">
                   {provider === "xai"
                     ? "If xAI shows a code instead of redirecting, paste that code here."
+                    : isGoogleDesktopProvider
+                      ? "After Google sign-in, copy the redirected URL from your browser address bar (or authorization code) and paste here."
                     : isKimchiProvider
                       ? "After authorization, copy the full callback URL or token from your browser."
                     : "After authorization, copy the full URL from your browser."}

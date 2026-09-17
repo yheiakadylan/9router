@@ -191,7 +191,7 @@ function renderCodexResultPage(success, message) {
  * Mode A (server-side): if any session was registered, proxy auto-exchanges + saves DB.
  * Mode B (channel fallback): if no session, proxy 302 redirects to app port for legacy channel-based flow.
  */
-export function startCodexProxy(appPort) {
+export function startCodexProxy(appPort, appOrigin = null) {
   return new Promise((resolve) => {
     if (codexProxyServer) {
       resolve({ success: true });
@@ -259,7 +259,7 @@ export function startCodexProxy(appPort) {
       }
 
       // Mode B: legacy channel fallback — 302 redirect to app /callback
-      const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
+      const redirectUrl = `${appOrigin || `http://localhost:${appPort}`}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
       stopCodexProxy();
@@ -337,7 +337,7 @@ function renderXaiResultPage(success, message) {
  * Mode A (server-side): if any session was registered, proxy auto-exchanges + saves DB.
  * Mode B (channel fallback): if no session, proxy 302 redirects to app port.
  */
-export function startXaiProxy(appPort) {
+export function startXaiProxy(appPort, appOrigin = null) {
   return new Promise((resolve) => {
     if (xaiProxyServer) {
       resolve({ success: true });
@@ -403,7 +403,7 @@ export function startXaiProxy(appPort) {
       }
 
       // Mode B: legacy fallback redirect
-      const redirectUrl = `http://localhost:${appPort}/callback${url.search}`;
+      const redirectUrl = `${appOrigin || `http://localhost:${appPort}`}/callback${url.search}`;
       res.writeHead(302, { Location: redirectUrl });
       res.end();
       stopXaiProxy();

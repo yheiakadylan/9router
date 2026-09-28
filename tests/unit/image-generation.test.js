@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleImageGenerationCore } from "../../open-sse/handlers/imageGenerationCore.js";
 import { getExecutor } from "../../open-sse/executors/index.js";
-import { PROVIDER_MODELS } from "../../open-sse/providers/index.js";
+import { PROVIDERS, PROVIDER_MODELS } from "../../open-sse/providers/index.js";
 
 const originalFetch = global.fetch;
 
@@ -355,8 +355,8 @@ describe("handleImageGenerationCore", () => {
         headers: expect.objectContaining({
           authorization: "Bearer codex-token",
           "chatgpt-account-id": "account-123",
-          version: "0.154.0",
-          "user-agent": "codex_cli_rs/0.154.0",
+          version: PROVIDERS.codex.cliVersion,
+          "user-agent": `codex_cli_rs/${PROVIDERS.codex.cliVersion}`,
         }),
       })
     );

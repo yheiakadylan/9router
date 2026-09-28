@@ -152,23 +152,51 @@ describe("Antigravity account cooldown selection", () => {
     })));
   });
 
-  it("deactivates an account when the provider returns 429", async () => {
+  it.each([401, 429])("deactivates an account when the provider returns %s", async (status) => {
     const connection = account("limited", 1);
     mocks.getProviderConnections.mockResolvedValue([connection]);
     vi.spyOn(console, "error").mockImplementation(() => {});
 
     await markAccountUnavailable(
       connection.id,
-      429,
-      "usage limit reached",
+      status,
+      Number(status) === 401 ? "Unauthorized" : "usage limit reached",
       "antigravity",
       "gemini-3.1-flash-image"
     );
 
     expect(mocks.updateProviderConnection).toHaveBeenCalledWith(
       "limited",
-      expect.objectContaining({ isActive: false })
+      expect.objectContaining({ isActive: false, testStatus: "unavailable", errorCode: status })
     );
+    const update = mocks.updateProviderConnection.mock.calls[0][1];
+    if (status === 429) {
+      expect(update.rateLimitRecovery).toMatchObject({ model: "gemini-3.1-flash-image", attempts: 0 });
+      expect(update.rateLimitRecovery.id).toEqual(expect.any(String));
+      expect(Date.parse(update.rateLimitRecovery.nextCheckAt)).toBeGreaterThan(Date.now());
+    } else {
+      expect(update.rateLimitRecovery).toBeNull();
+    }
+  });
+
+  it.each([403, 500])("does not deactivate an account for status %s", async (status) => {
+    const connection = account("limited", 1);
+    mocks.getProviderConnections.mockResolvedValue([connection]);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await markAccountUnavailable(
+      connection.id,
+      status,
+      "Upstream error",
+      "antigravity",
+      "gemini-3.1-flash-image"
+    );
+
+    expect(mocks.updateProviderConnection).toHaveBeenCalledWith(
+      "limited",
+      expect.objectContaining({ testStatus: "unavailable", errorCode: status })
+    );
+    expect(mocks.updateProviderConnection.mock.calls[0][1]).not.toHaveProperty("isActive");
   });
 
   it("lists only active accounts that are still usable", async () => {

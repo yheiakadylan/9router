@@ -13,8 +13,14 @@ const MULTI_REFERENCE_IMAGE_MODELS = new Set([
   "antigravity/gemini-3.1-flash-image",
   "codex/gpt-5.5-image",
 ]);
+// HuggingFace router edit models need a source image; reuse the public dog sample so
+// the card is runnable as-is. The router derives it from inputs, not from the Hub host.
+const HUGGINGFACE_TEST_IMAGE_URL = CLOUDFLARE_TEST_IMAGE_URL;
 
 function getImageEditDefaults(providerId, modelId) {
+  if (providerId === "huggingface") {
+    return { image: HUGGINGFACE_TEST_IMAGE_URL };
+  }
   if (providerId !== "cloudflare-ai") return {};
   if (modelId === "@cf/runwayml/stable-diffusion-v1-5-img2img") {
     return { image: CLOUDFLARE_TEST_IMAGE_URL };
@@ -92,8 +98,8 @@ export function GenericExampleCard({ providerId, kind }) {
 
   // Get models for this kind (e.g., type="image")
   const kindModels = getModelsByProviderId(providerId).filter((m) => getModelKind(m) === kind);
-  // Kinds that need a model identifier in the request (image/video/music)
-  const KIND_NEEDS_MODEL = new Set(["image", "video", "music", "imageToText"]);
+  // Kinds that need a model identifier in the request (image/video/music/systemone)
+  const KIND_NEEDS_MODEL = new Set(["image", "video", "music", "imageToText", "systemone"]);
   const needsModel = KIND_NEEDS_MODEL.has(kind);
   const allowManualModel = needsModel && kindModels.length === 0;
   const [selectedModel, setSelectedModel] = useState(kindModels[0]?.id ?? "");
@@ -104,6 +110,7 @@ export function GenericExampleCard({ providerId, kind }) {
   const supportsMask = !!selectedModelObj?.capabilities?.includes("mask");
 
   const [input, setInput] = useState(safeExConfig.defaultInput || "");
+  const [question, setQuestion] = useState("Does this request require urgent attention?");
   const [refImage, setRefImage] = useState("");
   const [refImages, setRefImages] = useState([]);
   const [maskImage, setMaskImage] = useState("");
@@ -178,11 +185,20 @@ export function GenericExampleCard({ providerId, kind }) {
     acc[k] = v;
     return acc;
   }, {});
+  const systemoneQuestions = kind === "systemone" ? {
+    questions: {
+      is_urgent: {
+        type: "noul",
+        instructions: question.trim() || "Does this request require urgent attention?",
+      },
+    },
+  } : {};
   const requestBody = {
     model: modelFull,
     [exConfig.bodyKey]: input,
     ...exConfig.extraBody,
     ...extraBodyFromFields,
+    ...systemoneQuestions,
     ...(supportsEdit && supportsMultipleRefs && effectiveRefImages.length > 1 ? { images: effectiveRefImages } : {}),
     ...(supportsEdit && (!supportsMultipleRefs || effectiveRefImages.length === 1) && effectiveRefImage ? { image: effectiveRefImage } : {}),
     ...(supportsMask && effectiveMaskImage ? { mask_image: effectiveMaskImage } : {}),
@@ -432,6 +448,29 @@ export function GenericExampleCard({ providerId, kind }) {
             )}
           </div>
         </Row>
+
+        {/* Question for System One */}
+        {kind === "systemone" && (
+          <Row label="Question">
+            <div className="relative">
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Enter evaluation question or criteria"
+                className="w-full px-3 py-1.5 pr-7 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
+              />
+              {question && (
+                <button
+                  type="button"
+                  onClick={() => setQuestion("")}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-primary transition-colors"
+                >
+                  <span className="material-symbols-outlined text-[14px]">close</span>
+                </button>
+              )}
+            </div>
+          </Row>
+        )}
 
         {/* Reference images (only for edit-capable image models) */}
         {supportsEdit && (

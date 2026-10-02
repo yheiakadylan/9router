@@ -587,6 +587,7 @@ export default function UsageStats({ period: periodProp, setPeriod: setPeriodPro
           <TopModelsChart byModel={stats.byModel} />
         </div>
       )}
+
       {/* Table with dropdown selector */}
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

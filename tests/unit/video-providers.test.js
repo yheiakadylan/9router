@@ -36,7 +36,8 @@ const JOB_ID = Buffer.from(OPERATION_NAME, "utf8").toString("base64url");
 describe("registry wiring", () => {
   it("exposes videoConfig + video serviceKind for openrouter and vertex", () => {
     expect(getVideoConfig("openrouter").baseUrl).toBe("https://openrouter.ai/api/v1/videos");
-    expect(getVideoConfig("vertex").baseUrl).toBe("https://aiplatform.googleapis.com");
+    expect(getVideoConfig("vertex").baseUrl).toBe("https://{location}-aiplatform.googleapis.com");
+    expect(getVideoConfig("vertex").defaultLocation).toBe("us-central1");
     expect(PROVIDER_MEDIA.openrouter.serviceKinds).toContain("video");
     expect(PROVIDER_MEDIA.vertex.serviceKinds).toContain("video");
   });
@@ -46,6 +47,13 @@ describe("registry wiring", () => {
     const vx = PROVIDER_MODELS.vertex.find((m) => m.id === "veo-3.1-generate-preview");
     expect(or?.kind).toBe("video");
     expect(vx?.kind).toBe("video");
+  });
+
+  it("lists Veo 3.1 GA models instead of retired Veo 3.0", () => {
+    const models = PROVIDER_MODELS.vertex.filter((model) => model.kind === "video");
+    expect(models[0].id).toBe("veo-3.1-generate-001");
+    expect(models.some((model) => model.id === "veo-3.1-fast-generate-001")).toBe(true);
+    expect(models.some((model) => model.id === "veo-3.0-generate-001")).toBe(false);
   });
 });
 
@@ -142,7 +150,7 @@ describe("vertex (veo) video adapter", () => {
     expect(result.success).toBe(true);
     const [url, init] = global.fetch.mock.calls[0];
     expect(url).toBe(
-      "https://aiplatform.googleapis.com/v1/projects/proj-1/locations/us-central1/publishers/google/models/veo-3.1-generate-preview:predictLongRunning"
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/proj-1/locations/us-central1/publishers/google/models/veo-3.1-generate-preview:predictLongRunning"
     );
     expect(init.headers.Authorization).toBe("Bearer vertex-tok");
     expect(JSON.parse(init.body)).toEqual({
@@ -198,7 +206,7 @@ describe("vertex (veo) video adapter", () => {
 
     const [url, init] = global.fetch.mock.calls[0];
     expect(url).toBe(
-      "https://aiplatform.googleapis.com/v1/projects/proj-1/locations/us-central1/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation"
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/proj-1/locations/us-central1/publishers/google/models/veo-3.1-generate-preview:fetchPredictOperation"
     );
     expect(init.method).toBe("POST"); // Vertex polls with POST, not GET
     expect(JSON.parse(init.body)).toEqual({ operationName: OPERATION_NAME });
@@ -210,6 +218,68 @@ describe("vertex (veo) video adapter", () => {
       video: { url: "gs://bucket/v.mp4", b64_json: null, mime_type: "video/mp4" },
       videos: [{ url: "gs://bucket/v.mp4", b64_json: null, mime_type: "video/mp4" }],
     });
+  });
+
+  it.each(["us-central1", "europe-west4"])("uses %s in both the creation host and resource path", async (location) => {
+    global.fetch.mockResolvedValueOnce(jsonResponse({ name: OPERATION_NAME }));
+    const result = await handleVideoProxyCore({
+      provider: "vertex",
+      action: "generations",
+      rawBody: JSON.stringify({ model: "veo-3.1-generate-001", prompt: "a paper boat" }),
+      contentType: "application/json",
+      credentials: { accessToken: "vertex-tok", providerSpecificData: { projectId: "proj-1", location } },
+    });
+    expect(result.success).toBe(true);
+    expect(global.fetch.mock.calls[0][0]).toBe(
+      `https://${location}-aiplatform.googleapis.com/v1/projects/proj-1/locations/${location}/publishers/google/models/veo-3.1-generate-001:predictLongRunning`
+    );
+  });
+
+  it("polls the operation's region even when the connection location has changed", async () => {
+    const operationName = OPERATION_NAME.replace("us-central1", "europe-west4");
+    global.fetch.mockResolvedValueOnce(jsonResponse({ name: operationName }));
+    const result = await handleVideoProxyCore({
+      provider: "vertex",
+      requestId: Buffer.from(operationName).toString("base64url"),
+      credentials: { accessToken: "vertex-tok", projectId: "proj-1", providerSpecificData: { location: "us-central1" } },
+    });
+    expect(result.success).toBe(true);
+    const [url, init] = global.fetch.mock.calls[0];
+    expect(url).toBe(`https://europe-west4-aiplatform.googleapis.com/v1/${operationName.split("/operations/")[0]}:fetchPredictOperation`);
+    expect(JSON.parse(init.body)).toEqual({ operationName });
+  });
+
+  it.each(["evil.example", "us-central1/../other", "us-central1@evil", ".."])("rejects unsafe location %s before sending credentials", async (location) => {
+    const credentials = { accessToken: "vertex-tok", projectId: "proj-1", providerSpecificData: { location } };
+    const create = await handleVideoProxyCore({
+      provider: "vertex",
+      action: "generations",
+      rawBody: JSON.stringify({ model: "veo-3.1-generate-001", prompt: "a paper boat" }),
+      contentType: "application/json",
+      credentials,
+    });
+    expect(create.status).toBe(400);
+    const poll = await handleVideoProxyCore({
+      provider: "vertex",
+      requestId: Buffer.from(OPERATION_NAME.replace("us-central1", location)).toString("base64url"),
+      credentials: { ...credentials, providerSpecificData: {} },
+    });
+    expect(poll.status).toBe(400);
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("returns model access errors without retrying a billable generation", async () => {
+    global.fetch.mockResolvedValueOnce(jsonResponse({ error: { code: 404, message: "Model not found or access denied" } }, 404));
+    const result = await handleVideoProxyCore({
+      provider: "vertex",
+      action: "generations",
+      rawBody: JSON.stringify({ model: "veo-3.1-generate-001", prompt: "a paper boat" }),
+      contentType: "application/json",
+      credentials: { accessToken: "vertex-tok", projectId: "proj-1" },
+    });
+    expect(result.status).toBe(404);
+    expect(await result.response.text()).toContain("Model not found or access denied");
+    expect(global.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("maps a failed operation to status failed", async () => {

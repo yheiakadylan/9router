@@ -10,8 +10,6 @@
 // into the job id returned to the client — GET /v1/videos/{id} stays a flat path.
 import { parseVertexSaJson, refreshVertexToken } from "../../services/tokenRefresh.js";
 
-const DEFAULT_LOCATION = "us-central1";
-
 const encodeJobId = (name) => Buffer.from(name, "utf8").toString("base64url");
 
 // Operation name shape: projects/{p}/locations/{l}/publishers/{pub}/models/{m}/operations/{op}.
@@ -33,13 +31,13 @@ function decodeJobId(id) {
   return OPERATION_NAME_RE.test(decoded) ? decoded : null;
 }
 
-async function resolveAuth(credentials, log) {
+async function resolveAuth(credentials, config, log) {
   const saJson = parseVertexSaJson(credentials?.apiKey);
   const projectId =
     saJson?.project_id ||
     credentials?.projectId ||
     credentials?.providerSpecificData?.projectId;
-  const location = credentials?.providerSpecificData?.location || DEFAULT_LOCATION;
+  const location = credentials?.providerSpecificData?.location || config.defaultLocation;
 
   if (!projectId) {
     return { error: "Vertex video requires a project_id — use Service Account JSON or set providerSpecificData.projectId" };
@@ -114,15 +112,19 @@ export default {
       return { error: "Vertex video requires an application/json body" };
     }
 
-    const auth = await resolveAuth(credentials, log);
+    const auth = await resolveAuth(credentials, config, log);
     if (auth.error) return { error: auth.error };
     const { token, projectId, location } = auth;
-    const base = (config.baseUrl || "https://aiplatform.googleapis.com").replace(/\/$/, "");
+    const operationName = requestId ? decodeJobId(requestId) : null;
+    if (requestId && !operationName) return { error: "Invalid Vertex video job id" };
+    const requestLocation = operationName ? operationName.split("/")[3] : location;
+    if (typeof requestLocation !== "string" || !/^[a-z][a-z0-9-]*$/.test(requestLocation)) {
+      return { error: "Invalid Vertex video location" };
+    }
+    const base = config.baseUrl.replace("{location}", requestLocation).replace(/\/$/, "");
     const headers = { Accept: "application/json", "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
     if (requestId) {
-      const operationName = decodeJobId(requestId);
-      if (!operationName) return { error: "Invalid Vertex video job id" };
       return {
         method: "POST",
         url: `${base}/v1/${modelPathOf(operationName)}:fetchPredictOperation`,

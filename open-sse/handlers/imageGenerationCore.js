@@ -23,8 +23,8 @@ function serializeRequestBody(requestBody) {
  * @param {boolean} [options.streamToClient] - Pipe SSE to client (codex)
  * @param {boolean} [options.binaryOutput] - Return raw image bytes
  * @param {function} [options.onCredentialsRefreshed]
- * @param {function} [options.onRequestSuccess]
  * @param {function} [options.onStreamComplete]
+ * @param {function} [options.onUsage] - Receives exact provider-reported usage when available
  * @returns {Promise<{ success: boolean, response: Response, status?: number, error?: string, retryable?: boolean }>}
  */
 export async function handleImageGenerationCore({
@@ -37,6 +37,7 @@ export async function handleImageGenerationCore({
   onCredentialsRefreshed,
   onRequestSuccess,
   onStreamComplete,
+  onUsage,
 }) {
   const { provider, model } = modelInfo;
 
@@ -183,6 +184,7 @@ export async function handleImageGenerationCore({
         streamToClient,
         onRequestSuccess,
         onStreamComplete,
+        onUsage,
         url,
         requestBody,
         model,

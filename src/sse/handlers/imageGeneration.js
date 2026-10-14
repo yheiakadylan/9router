@@ -10,6 +10,7 @@ import { getDisabledByProvider } from "@/lib/disabledModelsDb";
 import { saveRequestUsage } from "@/lib/usageDb.js";
 import { getModelInfo, getComboModels } from "../services/model.js";
 import CODEX_REGISTRY from "open-sse/providers/registry/codex.js";
+import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -64,6 +65,26 @@ function withConnectionMetadata(response, credentials) {
   });
 }
 
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
+  if (!usage || typeof usage !== "object") return;
+  const promptTokens = usage.prompt_tokens;
+  const completionTokens = usage.completion_tokens;
+  if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 ||
+      !Number.isSafeInteger(completionTokens) || completionTokens < 0) {
+    return;
+  }
+
+  saveRequestUsage({
+    provider,
+    model,
+    connectionId: connectionId || undefined,
+    apiKey: apiKey || undefined,
+    endpoint: endpoint || null,
+    tokens: usage,
+    status: "success",
+  }).catch(() => {});
+}
+
 /**
  * Handle image generation request
  * @param {Request} request
@@ -93,6 +114,10 @@ export async function handleImageGeneration(request) {
   if (!modelStr) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing model");
   if (!body.prompt) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Missing required field: prompt");
 
+  // Per-key access control: requested target, before combo expansion.
+  const keyAccessDenied = await enforceKeyAccess(await getKeyAccessContext(request), modelStr);
+  if (keyAccessDenied) return keyAccessDenied;
+
   // Combo expansion: model may be a combo name → run fallback/round-robin across models
   const comboModels = await getComboModels(modelStr);
   if (comboModels) {
@@ -103,7 +128,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -111,7 +136,7 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
 }
 
 import { saveRequestDetail } from "@/lib/requestDetailsDb";
@@ -156,7 +181,7 @@ function sanitizeImagePayload(obj) {
   return clean;
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
   const startTime = Date.now();
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
@@ -235,6 +260,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
   const excludeConnectionIds = new Set();
   let lastError = null;
   let lastStatus = null;
+  let reportedUsage = null;
 
   while (true) {
     const credentials = await getProviderCredentials(provider, excludeConnectionIds, model, { preferredConnectionId });
@@ -267,6 +293,17 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           testStatus: "active"
         });
       },
+      onUsage: (usage) => {
+        reportedUsage = usage;
+        recordImageRequestUsage({
+          provider,
+          model,
+          connectionId: credentials.connectionId,
+          apiKey,
+          endpoint,
+          usage,
+        });
+      },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
       },
@@ -276,13 +313,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         const durationMs = finishedAt - startTime;
         const ttftMs = firstChunkAt ? firstChunkAt - startTime : durationMs;
 
-        if (success) {
+        if (success && !reportedUsage) {
           saveRequestUsage({
             provider,
             model,
             connectionId: credentials.connectionId,
             apiKey: apiKey || null,
-            endpoint: "/v1/images/generations",
+            endpoint: endpoint || "/v1/images/generations",
             tokens: estimatedTokens,
             status: "success",
             durationMs,
@@ -310,22 +347,24 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
     const durationMs = Date.now() - startTime;
 
     if (result.success) {
-      saveRequestUsage({
-        provider,
-        model,
-        connectionId: credentials.connectionId,
-        apiKey: apiKey || null,
-        endpoint: "/v1/images/generations",
-        tokens: estimatedTokens,
-        status: "success",
-        durationMs,
-      }).catch(() => {});
+      if (!reportedUsage && provider !== "codex") {
+        saveRequestUsage({
+          provider,
+          model,
+          connectionId: credentials.connectionId,
+          apiKey: apiKey || null,
+          endpoint: endpoint || "/v1/images/generations",
+          tokens: estimatedTokens,
+          status: "success",
+          durationMs,
+        }).catch(() => {});
+      }
       saveRequestDetail({
         provider,
         model,
         connectionId: credentials.connectionId,
         status: "success",
-        endpoint: "/v1/images/generations",
+        endpoint: endpoint || "/v1/images/generations",
         latency: { ttft: durationMs, total: durationMs },
         request: sanitizeImagePayload(body),
         response: sanitizeImagePayload(result.response),

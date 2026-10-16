@@ -1,6 +1,6 @@
 // Codex (ChatGPT Plus/Pro) image generation via Responses API + SSE
 import { randomUUID } from "node:crypto";
-import { nowSec } from "./_base.js";
+import { nowSec, uploadBase64ImageOutput, validateImageOutputUpload } from "./_base.js";
 import { PROVIDERS } from "../../config/providers.js";
 import { CODEX_CLI_VERSION } from "../../config/appConstants.js";
 import { detectImageMime, encodeDataUri, fetchImageAsBase64, parseDataUri } from "../../translator/concerns/image.js";
@@ -100,6 +100,32 @@ function buildContent(prompt, refs, detail = CODEX_REF_DETAIL) {
   });
   content.push({ type: "input_text", text: prompt });
   return content;
+}
+
+function outputUrlForLog(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return String(value || "");
+  }
+}
+
+async function buildImageOutput(b64, outputUpload, log) {
+  if (outputUpload) {
+    try {
+      const uploadedUrl = await uploadBase64ImageOutput(b64, outputUpload);
+      log?.info?.("IMAGE", `codex output: url ${outputUrlForLog(uploadedUrl)}`);
+      return { url: uploadedUrl };
+    } catch (error) {
+      const message = error?.message || String(error);
+      if (message.startsWith("Generated image size is invalid:")) throw error;
+      log?.warn?.("IMAGE", `direct image upload failed, falling back to base64: ${message}`);
+    }
+  }
+
+  log?.info?.("IMAGE", `codex output: base64 (${b64.length} chars)`);
+  return { b64_json: b64 };
 }
 
 function extractStreamError(data) {
@@ -255,7 +281,7 @@ async function parseStream(response, log, callbacks = {}) {
 }
 
 // SSE Response that pipes codex progress + partial + done events to client
-function buildSseResponse(providerResponse, log, onSuccess, onComplete, onUsage) {
+function buildSseResponse(providerResponse, log, onSuccess, onComplete, onUsage, outputUpload) {
   const stream = new ReadableStream({
     async start(controller) {
       const enc = new TextEncoder();
@@ -272,7 +298,7 @@ function buildSseResponse(providerResponse, log, onSuccess, onComplete, onUsage)
         const { b64, error: upstreamError, usage } = await parseStream(providerResponse, log, {
           onFirstChunk: (timestamp) => { firstChunkAt = timestamp; },
           onProgress: (info) => send("progress", info),
-          onPartialImage: (info) => send("partial_image", info),
+          onPartialImage: outputUpload ? undefined : (info) => send("partial_image", info),
         });
         const completedAt = Date.now();
         if (!b64) {
@@ -281,8 +307,9 @@ function buildSseResponse(providerResponse, log, onSuccess, onComplete, onUsage)
           notifyComplete({ success: false, error: message, firstChunkAt, completedAt });
         } else {
           if (usage && onUsage) await onUsage(usage);
+          const output = await buildImageOutput(b64, outputUpload, log);
           if (onSuccess) await onSuccess();
-          const response = { created: nowSec(), data: [{ b64_json: b64 }] };
+          const response = { created: nowSec(), data: [output] };
           send("done", response);
           notifyComplete({ success: true, response, firstChunkAt, completedAt });
         }
@@ -325,6 +352,7 @@ export default {
     };
   },
   buildBody: async (model, body) => {
+    validateImageOutputUpload(body.output_upload);
     const refs = [];
     if (Array.isArray(body.images)) {
       for (const [index, image] of body.images.entries()) {
@@ -362,16 +390,17 @@ export default {
     };
   },
   // Custom: codex parses SSE → either pipe to client or collect b64
-  async parseResponse(response, { log, streamToClient, onRequestSuccess, onStreamComplete, onUsage }) {
+  async parseResponse(response, { log, streamToClient, onRequestSuccess, onStreamComplete, onUsage, body }) {
     if (streamToClient) {
-      return { sseResponse: buildSseResponse(response, log, onRequestSuccess, onStreamComplete, onUsage) };
+      return { sseResponse: buildSseResponse(response, log, onRequestSuccess, onStreamComplete, onUsage, body?.output_upload) };
     }
     const { b64, error: upstreamError, usage } = await parseStream(response, log);
     if (!b64) {
       throw new Error(upstreamError || "Codex did not return an image. Account may not be entitled (Plus/Pro required) or request was rejected.");
     }
     if (usage && onUsage) await onUsage(usage);
-    return { created: nowSec(), data: [{ b64_json: b64 }] };
+    const output = await buildImageOutput(b64, body?.output_upload, log);
+    return { created: nowSec(), data: [output] };
   },
   normalize: (responseBody) => responseBody,
 };

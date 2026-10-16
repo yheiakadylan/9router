@@ -44,6 +44,11 @@ function envUrl(name, def) {
   return raw || def;
 }
 
+function envCsv(name, defaults) {
+  const raw = process.env[name]?.trim();
+  return new Set((raw ? raw.split(",") : defaults).map((value) => value.trim().toLowerCase()).filter(Boolean));
+}
+
 // SearXNG endpoint used by the unauthenticated web-search provider.
 // Configure this for a separate Docker service or remote SearXNG instance.
 export const SEARXNG_URL = envUrl("SEARXNG_URL", "http://localhost:8888/search");
@@ -57,6 +62,11 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
+
+// Client-provided signed PUT URLs are restricted to trusted object-storage hosts.
+export const IMAGE_OUTPUT_UPLOAD_HOSTS = envCsv("IMAGE_OUTPUT_UPLOAD_HOSTS", ["storage.googleapis.com"]);
+export const IMAGE_OUTPUT_UPLOAD_TIMEOUT_MS = envMs("IMAGE_OUTPUT_UPLOAD_TIMEOUT_MS", 60 * 1000);
+export const IMAGE_OUTPUT_MAX_BYTES = 50 * 1024 * 1024;
 
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);

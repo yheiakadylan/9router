@@ -164,6 +164,14 @@ function sanitizeImagePayload(obj) {
   }
   const clean = {};
   for (const [key, val] of Object.entries(obj)) {
+    if (key === "output_upload" && val && typeof val === "object") {
+      clean[key] = {
+        url: "[Signed upload URL redacted]",
+        public_url: "[Signed image URL redacted]",
+        content_type: val.content_type,
+      };
+      continue;
+    }
     if (typeof val === "string") {
       if (val.startsWith("data:image/") || (key === "b64_json" && val.length > 200)) {
         clean[key] = `[Base64 Image Data: ${val.length} chars]`;

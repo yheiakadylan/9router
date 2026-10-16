@@ -430,6 +430,49 @@ describe("handleImageGenerationCore", () => {
     }));
   });
 
+  it("uploads Codex streaming output before sending the done event", async () => {
+    const imageBytes = Buffer.from("streamed-image");
+    const uploadUrl = "https://storage.googleapis.com/test-bucket/stream.png?signature=test";
+    const publicUrl = "https://storage.googleapis.com/test-bucket/stream.png?read=test";
+    global.fetch
+      .mockResolvedValueOnce(new Response([
+        "event: response.image_generation_call.partial_image",
+        `data: ${JSON.stringify({ partial_image_b64: imageBytes.toString("base64"), partial_image_index: 0 })}`,
+        "",
+        "event: response.output_item.done",
+        `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBytes.toString("base64") } })}`,
+        "",
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const onStreamComplete = vi.fn();
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A streamed green square",
+        output_upload: {
+          url: uploadUrl,
+          public_url: publicUrl,
+          content_type: "image/png",
+        },
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      streamToClient: true,
+      onStreamComplete,
+    });
+
+    const responseText = await result.response.text();
+    expect(responseText).toContain(`"url":"${publicUrl}"`);
+    expect(responseText).not.toContain("b64_json");
+    expect(responseText).not.toContain("event: partial_image");
+    expect(responseText).not.toContain(imageBytes.toString("base64"));
+    expect(onStreamComplete).toHaveBeenCalledWith(expect.objectContaining({
+      success: true,
+      response: expect.objectContaining({ data: [{ url: publicUrl }] }),
+    }));
+  });
+
   it("generates image with Codex gpt-image-2.5 tool model", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(
@@ -469,6 +512,148 @@ describe("handleImageGenerationCore", () => {
 
     const responseBody = await result.response.json();
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
+  });
+
+  it("uploads Codex output to a signed URL and returns only the stored URL", async () => {
+    const imageBytes = Buffer.from("generated-image");
+    const imageBase64 = imageBytes.toString("base64");
+    const uploadUrl = "https://storage.googleapis.com/test-bucket/result.png?signature=test";
+    const publicUrl = "https://storage.googleapis.com/test-bucket/result.png?read=test";
+    global.fetch
+      .mockResolvedValueOnce(
+        new Response(
+          [
+            "event: response.output_item.done",
+            `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
+            "",
+            "",
+          ].join("\n"),
+          { status: 200, headers: { "Content-Type": "text/event-stream" } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A green square",
+        response_format: "url",
+        output_upload: {
+          url: uploadUrl,
+          public_url: publicUrl,
+          content_type: "image/png",
+        },
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      log: null,
+    });
+
+    expect(result.success).toBe(true);
+    expect(global.fetch).toHaveBeenNthCalledWith(2, uploadUrl, expect.objectContaining({
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: imageBytes,
+      redirect: "error",
+    }));
+    const responseBody = await result.response.json();
+    expect(responseBody.data).toEqual([{ url: publicUrl }]);
+    expect(JSON.stringify(responseBody)).not.toContain("b64_json");
+  });
+
+  it("falls back to base64 when the signed output upload fails", async () => {
+    const imageBase64 = Buffer.from("generated-image").toString("base64");
+    const log = { info: vi.fn(), warn: vi.fn() };
+    global.fetch
+      .mockResolvedValueOnce(
+        new Response([
+          "event: response.output_item.done",
+          `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
+          "",
+          "",
+        ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } })
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A green square",
+        output_upload: {
+          url: "https://storage.googleapis.com/test-bucket/result.png?signature=expired",
+          public_url: "https://storage.googleapis.com/test-bucket/result.png?read=test",
+          content_type: "image/png",
+        },
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      log,
+    });
+
+    expect(result.success).toBe(true);
+    expect(await result.response.json()).toEqual(expect.objectContaining({
+      data: [{ b64_json: imageBase64 }],
+    }));
+    expect(log.warn).toHaveBeenCalledWith(
+      "IMAGE",
+      "direct image upload failed, falling back to base64: Direct image upload failed: HTTP 403",
+    );
+    expect(log.info).toHaveBeenCalledWith("IMAGE", `codex output: base64 (${imageBase64.length} chars)`);
+  });
+
+  it("falls back to base64 in the client stream when direct upload fails", async () => {
+    const imageBase64 = Buffer.from("streamed-fallback-image").toString("base64");
+    const log = { info: vi.fn(), warn: vi.fn() };
+    global.fetch
+      .mockResolvedValueOnce(new Response([
+        "event: response.output_item.done",
+        `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
+        "",
+        "",
+      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(new Response(null, { status: 403 }));
+
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A streamed fallback image",
+        output_upload: {
+          url: "https://storage.googleapis.com/test-bucket/stream.png?signature=expired",
+          public_url: "https://storage.googleapis.com/test-bucket/stream.png?read=test",
+          content_type: "image/png",
+        },
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      streamToClient: true,
+      log,
+    });
+
+    const responseText = await result.response.text();
+    expect(responseText).toContain(`"b64_json":"${imageBase64}"`);
+    expect(responseText).not.toContain("event: error");
+    expect(log.warn).toHaveBeenCalledWith(
+      "IMAGE",
+      "direct image upload failed, falling back to base64: Direct image upload failed: HTTP 403",
+    );
+  });
+
+  it("rejects untrusted signed output upload hosts before image generation", async () => {
+    const result = await handleImageGenerationCore({
+      body: {
+        prompt: "A green square",
+        output_upload: {
+          url: "https://example.com/result.png",
+          public_url: "https://example.com/result.png",
+          content_type: "image/png",
+        },
+      },
+      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      credentials: { accessToken: "codex-token", providerSpecificData: {} },
+      log: null,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(400);
+    expect(result.error).toContain("output_upload host is not allowed");
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("routes GPT Image 2 through the Codex image tool model", async () => {

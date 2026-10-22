@@ -12,9 +12,11 @@ services:
       PORT: "20128"
       HOSTNAME: 0.0.0.0
       NODE_ENV: production
+      CLUSTER_WORKERS: "4"
+      UV_THREADPOOL_SIZE: "64"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:20128/api/health"]
       interval: 10s
       timeout: 5s
       retries: 6
-      start_period: 20s
+      start_period: 40s

@@ -3,14 +3,19 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { pathToFileURL } = require("url");
+const cluster = require("cluster");
 
 const origCreate = http.createServer.bind(http);
+
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = "64";
+}
 
 // Per-process secret proving x-9r-real-ip was stamped below rather than sent by the client.
 // A bare `next start` / `next dev` never loads this file, so it cannot produce a matching
 // header even though the env var is inherited by child processes. Named like x-9r-cli-token
 // so the request-detail header sanitizer redacts it too.
-const PEER_TOKEN = crypto.randomBytes(24).toString("hex");
+const PEER_TOKEN = process.env.NINEROUTER_PEER_TOKEN || crypto.randomBytes(24).toString("hex");
 process.env.NINEROUTER_PEER_TOKEN = PEER_TOKEN;
 
 let backgroundRefreshStarted = false;
@@ -74,7 +79,9 @@ http.createServer = (...args) => {
   };
   const server = origCreate(...rest, wrapped);
   server.once("listening", () => {
-    startBackgroundTokenRefreshFromCustomServer();
+    if (!cluster.isWorker || cluster.worker.id === 1) {
+      startBackgroundTokenRefreshFromCustomServer();
+    }
   });
   const origEmit = server.emit;
   // JBR 25 sends h2c upgrades that the HTTP/1.1 server would otherwise close.
@@ -126,14 +133,40 @@ http.createServer = (...args) => {
 };
 
 if (require.main === module) {
-  const standalone = path.join(__dirname, "server.js");
-  if (fs.existsSync(standalone)) {
-    require(standalone);
+  const rawWorkers = process.env.CLUSTER_WORKERS;
+  const numWorkers = rawWorkers ? parseInt(rawWorkers, 10) : 1;
+
+  if (cluster.isPrimary && numWorkers > 1) {
+    console.log(`[Cluster] Primary process ${process.pid} is running. Starting ${numWorkers} workers...`);
+    for (let i = 0; i < numWorkers; i++) {
+      cluster.fork();
+    }
+    cluster.on("exit", (worker, code, signal) => {
+      console.warn(`[Cluster] Worker ${worker.process.pid} exited (${signal || code}). Respawning...`);
+      cluster.fork();
+    });
+    const shutdown = () => {
+      for (const id in cluster.workers) {
+        try {
+          cluster.workers[id]?.process.kill();
+        } catch {
+          /* ignore */
+        }
+      }
+      process.exit(0);
+    };
+    process.on("SIGINT", shutdown);
+    process.on("SIGTERM", shutdown);
   } else {
-    // Repo checkout has no standalone build next to us. `next start` builds its HTTP
-    // server in-process, so the wrapper above still sanitizes every request.
-    const nextBin = require.resolve("next/dist/bin/next");
-    process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
-    require(nextBin);
+    const standalone = path.join(__dirname, "server.js");
+    if (fs.existsSync(standalone)) {
+      require(standalone);
+    } else {
+      // Repo checkout has no standalone build next to us. `next start` builds its HTTP
+      // server in-process, so the wrapper above still sanitizes every request.
+      const nextBin = require.resolve("next/dist/bin/next");
+      process.argv = [process.argv[0], nextBin, "start", ...process.argv.slice(2)];
+      require(nextBin);
+    }
   }
 }

@@ -41,7 +41,16 @@ const statsEmitTimers = global._statsEmitTimers;
 
 export const statsEmitter = global._statsEmitter;
 
-function scheduleStatsEvent(event, delayMs = 150) {
+const isApiWorker = process.env.NINEROUTER_WORKER_ROLE === "api";
+const isControlWorker = process.env.NINEROUTER_WORKER_ROLE === "control";
+
+function sendUsageIpc(message) {
+  if (!isApiWorker || !process.connected || !process.send) return;
+  try { process.send(message, () => {}); } catch { /* worker is shutting down */ }
+}
+
+function scheduleStatsEvent(event, delayMs = 150, fromIpc = false) {
+  if (!fromIpc) sendUsageIpc({ type: "ninerouter:usage-event", event });
   const key = event === "update" ? "update" : "pending";
   if (statsEmitTimers[key]) return;
   statsEmitTimers[key] = setTimeout(() => {
@@ -156,7 +165,13 @@ async function calculateCost(provider, model, tokens) {
   }
 }
 
-export function trackPendingRequest(model, provider, connectionId, started, error = false, requestType = "chat", requestId = null) {
+export function trackPendingRequest(model, provider, connectionId, started, error = false, requestType = "chat", requestId = null, fromIpc = false) {
+  if (!fromIpc) {
+    sendUsageIpc({
+      type: "ninerouter:usage-pending",
+      payload: { model, provider, connectionId, started, error, requestType, requestId },
+    });
+  }
   const modelKey = provider ? `${model} (${provider})` : model;
   const type = requestType === "image" ? "image" : "chat";
   const timerKey = requestId ? `${type}|${requestId}` : `${connectionId}|${modelKey}`;
@@ -224,6 +239,29 @@ export function trackPendingRequest(model, provider, connectionId, started, erro
 
   // [PENDING] console line removed; lifecycle is visible via "▶" and "📊 done" lines
   scheduleStatsEvent("pending");
+}
+
+if (isControlWorker && !global._usageIpcRegistered) {
+  global._usageIpcRegistered = true;
+  process.on("message", (message) => {
+    if (message?.type === "ninerouter:usage-event") {
+      scheduleStatsEvent(message.event, 0, true);
+      return;
+    }
+    if (message?.type === "ninerouter:usage-pending" && message.payload) {
+      const payload = message.payload;
+      trackPendingRequest(
+        payload.model,
+        payload.provider,
+        payload.connectionId,
+        payload.started,
+        payload.error,
+        payload.requestType,
+        payload.requestId,
+        true
+      );
+    }
+  });
 }
 
 export async function getActiveRequests() {

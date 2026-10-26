@@ -4,8 +4,14 @@ import { nowSec, sizeToAspectRatio } from "./_base.js";
 import { getExecutor } from "../../executors/index.js";
 import { detectImageMime, fetchImageAsBase64, parseDataUri } from "../../translator/concerns/image.js";
 
-// Convert image input (data URI, remote URL, or raw base64) to Gemini inlineData.
+// Antigravity accepts up to 10 reference images per request
+const MAX_REFERENCE_IMAGES = 10;
+
+// Convert image input (data URI, remote URL, or raw base64) to Gemini inlineData part
 async function resolveImageInput(input) {
+  if (input && typeof input === "object") {
+    input = input.image_url?.url || input.url || input.data || input.b64_json;
+  }
   if (!input || typeof input !== "string") return null;
   let parsed = parseDataUri(input);
 
@@ -53,6 +59,19 @@ function parseQuotaResetAt(bodyText) {
   return null;
 }
 
+// Collect reference images from the accepted request field shapes
+function collectImageInputs(body) {
+  const candidates = [
+    body.reference_images,
+    body.images,
+    body.reference_image,
+    body.image,
+  ];
+  return candidates
+    .flatMap(v => (Array.isArray(v) ? v : v ? [v] : []))
+    .slice(0, MAX_REFERENCE_IMAGES);
+}
+
 export default {
   // Delegate to executor instead of building URL/headers/body manually
   useExecutor: true,
@@ -70,19 +89,25 @@ export default {
     const isImageModel = (m) => /image|imagen|image-generation/i.test(m || "");
     let targetModel = isImageModel(model) ? model : "gemini-3.1-flash-image";
 
-    if (body.size && typeof body.size === "string") {
-      const suffix = sizeToAspectRatio(body.size).replace(":", "x");
-      if (!targetModel.includes(suffix)) targetModel = `${targetModel}-${suffix}`;
+    // Aspect ratio: explicit body.aspect_ratio wins, then body.size
+    let ratio = null;
+    if (body.aspect_ratio && /^\d{1,2}:\d{1,2}$/.test(String(body.aspect_ratio))) {
+      ratio = String(body.aspect_ratio);
+    } else if (body.size && typeof body.size === "string") {
+      ratio = sizeToAspectRatio(body.size);
+    }
+    if (ratio) {
+      const suffix = ratio.replace(":", "x");
+      if (!targetModel.includes(suffix)) {
+        targetModel = `${targetModel}-${suffix}`;
+      }
     }
 
-    const imageInputs = [];
-    if (Array.isArray(body.images)) imageInputs.push(...body.images);
-    if (Array.isArray(body.image)) imageInputs.push(...body.image);
-    else if (body.image) imageInputs.push(body.image);
-
+    // Build parts: reference images first, then the text prompt
+    const imageInputs = collectImageInputs(body);
     const parts = [];
-    for (const input of imageInputs) {
-      const inlineData = await resolveImageInput(input);
+    for (const imageInput of imageInputs) {
+      const inlineData = await resolveImageInput(imageInput);
       if (!inlineData) {
         const error = new Error("Invalid reference image. Use a data URL, HTTP(S) URL, or raw base64 image.");
         error.status = 400;
@@ -91,7 +116,12 @@ export default {
       }
       parts.push(inlineData);
     }
-    parts.push({ text: buildImagePrompt(body.prompt, imageInputs.length) });
+
+    // Gemini image models have no negative prompt param — fold it into the prompt text
+    const basePrompt = body.negative_prompt
+      ? `${body.prompt}\n\nNegative prompt: ${body.negative_prompt}`
+      : body.prompt;
+    parts.push({ text: buildImagePrompt(basePrompt, parts.length) });
 
     const chatBody = {
       contents: [{ role: "user", parts }],

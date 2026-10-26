@@ -12,6 +12,7 @@ import { getModelInfo, getComboModels } from "../services/model.js";
 import CODEX_REGISTRY from "open-sse/providers/registry/codex.js";
 import { getKeyAccessContext, enforceKeyAccess } from "../services/keyAccess.js";
 import { handleImageGenerationCore } from "open-sse/handlers/imageGenerationCore.js";
+import { getImageAdapter } from "open-sse/handlers/imageProviders/index.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
@@ -21,7 +22,7 @@ import { randomUUID } from "node:crypto";
 import { trackPendingRequest } from "@/lib/usageDb.js";
 
 // Providers that don't require credentials (noAuth)
-const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui"]);
+const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
 const CODEX_IMAGE_MODEL_IDS = CODEX_REGISTRY.models
   .filter((entry) => entry.kind === "image")
   .map((entry) => entry.id);
@@ -287,6 +288,17 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
 
     const refreshedCredentials = await checkAndRefreshToken(provider, credentials);
 
+    // Skip accounts the adapter knows cannot generate images (e.g. ChatGPT Free on codex)
+    // without locking them: they stay usable for chat.
+    const adapter = getImageAdapter(provider);
+    if (adapter?.canUseCredentials && !adapter.canUseCredentials(refreshedCredentials)) {
+      log.info("IMAGE", `[${provider}/${model}] skip connection ${credentials.connectionId.slice(0, 8)}: plan not entitled to image generation`);
+      excludeConnectionIds.add(credentials.connectionId);
+      lastError = lastError || "No account entitled to image generation (ChatGPT Free plans are not supported)";
+      lastStatus = lastStatus || HTTP_STATUS.FORBIDDEN;
+      continue;
+    }
+
     const result = await handleImageGenerationCore({
       body,
       modelInfo: { provider, model },
@@ -314,6 +326,11 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       },
       onRequestSuccess: async () => {
         await clearAccountError(credentials.connectionId, credentials, model);
+        // Cookies that rotate on use (Clerk `__client`) are mutated in place by
+        // the executor — persist the new value so the chain does not drift.
+        if (refreshedCredentials.apiKey && refreshedCredentials.apiKey !== credentials.apiKey) {
+          await updateProviderCredentials(credentials.connectionId, { apiKey: refreshedCredentials.apiKey });
+        }
       },
       onStreamComplete: ({ success, response, error, firstChunkAt, completedAt }) => {
         releaseImageRequest();

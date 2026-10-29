@@ -799,27 +799,41 @@ export function GenericExampleCard({ providerId, kind }) {
               </button>
             )}
           </div>
-          {kind === "image" && (binaryImageUrl || result?.data?.data?.[0]) && (
-            <div className="mb-2">
-              <div className="flex items-center justify-end mb-1.5">
-                <a
-                  href={binaryImageUrl || (result?.data?.data?.[0]?.b64_json ? `data:image/png;base64,${result.data.data[0].b64_json}` : result?.data?.data?.[0]?.url || "")}
-                  download="image.png"
-                  className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-primary transition-colors"
-                >
-                  <span className="material-symbols-outlined text-[14px]">download</span>
-                  Download
-                </a>
+          {kind === "image" && (binaryImageUrl || (Array.isArray(result?.data?.data) && result.data.data.length > 0)) && (() => {
+            const items = binaryImageUrl ? [{ url: binaryImageUrl }] : result.data.data;
+            return (
+              <div className={`mb-2 grid gap-3 ${items.length > 1 ? "grid-cols-1 sm:grid-cols-2" : "grid-cols-1"}`}>
+                {items.map((item, idx) => {
+                  const src = item?.b64_json ? `data:${item.mime_type || "image/png"};base64,${item.b64_json}` : (item?.url || "");
+                  if (!src) return null;
+                  return (
+                    <div key={idx} className="flex flex-col">
+                      <div className="flex items-center justify-between mb-1.5">
+                        {items.length > 1 ? (
+                          <span className="text-xs text-text-muted">Image #{idx + 1}</span>
+                        ) : <span />}
+                        <a
+                          href={src}
+                          download={items.length > 1 ? `image-${idx + 1}.png` : "image.png"}
+                          className="inline-flex items-center gap-1 text-xs text-text-muted hover:text-primary transition-colors"
+                        >
+                          <span className="material-symbols-outlined text-[14px]">download</span>
+                          Download
+                        </a>
+                      </div>
+                      <img
+                        src={src}
+                        alt={`Generated ${idx + 1}`}
+                        className="max-w-full rounded-lg border border-border"
+                        loading="lazy"
+                        decoding="async"
+                      />
+                    </div>
+                  );
+                })}
               </div>
-              <img
-                src={binaryImageUrl || (result?.data?.data?.[0]?.b64_json ? `data:image/png;base64,${result.data.data[0].b64_json}` : result?.data?.data?.[0]?.url)}
-                alt="Generated"
-                className="max-w-full rounded-lg border border-border"
-              loading="lazy"
-              decoding="async"
-              />
-            </div>
-          )}
+            );
+          })()}
           {kind === "video" && videoUrl && (
             <div className="mb-2">
               <div className="flex items-center justify-end mb-1.5">

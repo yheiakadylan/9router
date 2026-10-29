@@ -70,14 +70,8 @@ export class ChatGptWebExecutor extends BaseExecutor {
 
   async testConnection(credentials) {
     try {
-      const raw = credentials?.providerSpecificData?.storageState ?? credentials?.apiKey;
-      if (typeof raw !== "string" || !raw.trim()) return false;
-      // Accept either a full storage-state JSON or a raw session-token cookie.
-      if (raw.trim().startsWith("{")) {
-        JSON.parse(raw);
-        return true;
-      }
-      return /__Secure-next-auth\.session-token|^[\w-]+\.[\w-]+\.[\w-]+$/.test(raw.trim());
+      const state = readStorageState(credentials);
+      return Array.isArray(state?.cookies) && state.cookies.some((c) => /^__Secure-next-auth\.session-token(?:\.\d+)?$/.test(c?.name || ""));
     } catch {
       return false;
     }
@@ -181,7 +175,7 @@ export class ChatGptWebExecutor extends BaseExecutor {
    *
    * @returns {Promise<Array<{ b64: string, mime: string }>>}
    */
-  async generateMedia({ prompt, n = 1, size, credentials, signal, log }) {
+  async generateMedia({ prompt, n = 1, size, images, credentials, signal, log }) {
     if (!prompt) throw new Error("prompt is required for image generation");
     const storageState = readStorageState(credentials);
     const providerData = credentials.providerSpecificData;
@@ -192,12 +186,12 @@ export class ChatGptWebExecutor extends BaseExecutor {
 
     const results = [];
     for (let i = 0; i < Math.max(1, n); i++) {
-      results.push(await this.#generateOneImage({ prompt, size, storageState, userAgent, signal, log, credentials }));
+      results.push(await this.#generateOneImage({ prompt, size, images, storageState, userAgent, signal, log, credentials }));
     }
     return results;
   }
 
-  async #generateOneImage({ prompt, size, storageState, userAgent, signal, log, credentials }) {
+  async #generateOneImage({ prompt, size, images, storageState, userAgent, signal, log, credentials }) {
     try {
       const accessToken = await fetchAccessToken({ storageState, userAgent, signal });
       return await generateChatGptWebImageHttp({
@@ -207,6 +201,7 @@ export class ChatGptWebExecutor extends BaseExecutor {
         userAgent,
         prompt,
         sizeHint: size,
+        images,
         signal,
         log,
       });

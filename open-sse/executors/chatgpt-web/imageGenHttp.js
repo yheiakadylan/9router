@@ -6,6 +6,8 @@
 
 import { randomUUID } from "node:crypto";
 import { SENTINEL_HEADERS, fetchSentinelHeaders } from "./sentinel.js";
+import { resolveChatGptWebAttachments } from "./attachments.js";
+import { detectImageMime, encodeDataUri, fetchImageAsBase64, parseDataUri } from "../../translator/concerns/image.js";
 
 const MAX_SSE_BYTES = 16 * 1024 * 1024;
 const MAX_CONVERSATION_BYTES = 32 * 1024 * 1024;
@@ -14,6 +16,7 @@ const POLL_INITIAL_WAIT_MS = 5000;
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 240000;
 const DOWNLOAD_TIMEOUT_MS = 90000;
+const UPLOAD_TIMEOUT_MS = 60000;
 const CONTENT_POLICY_RE =
   /(content policy|violat(?:es|ed|ion)|can't create|cannot create|i can't generate|i cannot generate|not able to create|unable to create|safety)/i;
 
@@ -73,9 +76,9 @@ async function readSse(response, limit, deadlineMs) {
   return text;
 }
 
-const collectIds = (text, fileIds, sedimentIds) => {
+const collectIds = (text, fileIds, sedimentIds, excludeIds = null) => {
   const addUnique = (list, value) => {
-    if (value && !list.includes(value)) list.push(value);
+    if (value && !excludeIds?.has(value) && !list.includes(value)) list.push(value);
   };
   for (const match of text.matchAll(/file-service:\/\/([A-Za-z0-9_-]+)/g)) addUnique(fileIds, match[1]);
   for (const match of text.matchAll(/\bfile_00000000[a-f0-9]{24}\b/g)) addUnique(fileIds, match[0]);
@@ -91,10 +94,182 @@ function authHeaders({ accessToken, userAgent, cookie, sentinel }) {
   };
 }
 
+function decodeBase64Image(input) {
+  if (!input || typeof input !== "string") return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  try {
+    const headerBuffer = Buffer.from(trimmed.slice(0, 64), "base64");
+    if (!headerBuffer.length) return null;
+    const mimeType = detectImageMime(headerBuffer);
+    return mimeType ? { base64: trimmed, mimeType } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function normalizeImageInputToDataUrl(input, label) {
+  if (!input || typeof input !== "string") {
+    throw new ChatGptWebImageError(`Invalid reference image at ${label}. Use an image URL, image data URL, or raw image base64.`, 400);
+  }
+  const trimmed = input.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    const fetched = await fetchImageAsBase64(trimmed);
+    if (fetched?.url) return fetched.url;
+    throw new ChatGptWebImageError(`Unable to download reference image at ${label}.`, 400);
+  }
+  const parsed = parseDataUri(trimmed);
+  if (parsed?.mimeType?.startsWith("image/")) {
+    const decoded = decodeBase64Image(parsed.base64);
+    if (decoded) return encodeDataUri(decoded.mimeType, decoded.base64);
+  }
+  const decoded = decodeBase64Image(trimmed);
+  if (decoded) return encodeDataUri(decoded.mimeType, decoded.base64);
+  throw new ChatGptWebImageError(`Invalid reference image at ${label}. Use an image URL, image data URL, or raw image base64.`, 400);
+}
+
+/** Upload reference images to ChatGPT's /backend-api/files pipeline over HTTP. */
+async function uploadReferenceImagesHttp(ctx, rawImages, signal) {
+  if (!Array.isArray(rawImages) || rawImages.length === 0) return [];
+
+  const sources = [];
+  for (const [idx, raw] of rawImages.entries()) {
+    const ref = await normalizeImageInputToDataUrl(raw, `images[${idx}]`);
+    const ext = ref.startsWith("data:image/jpeg") ? "jpg" : ref.startsWith("data:image/webp") ? "webp" : "png";
+    sources.push({
+      kind: "image",
+      ref,
+      name: `reference-${idx + 1}.${ext}`,
+    });
+  }
+
+  const resolved = await resolveChatGptWebAttachments(sources);
+  const headers = { ...authHeaders(ctx), "Content-Type": "application/json", Accept: "application/json" };
+  const uploaded = [];
+
+  for (const attachment of resolved) {
+    const regRes = await fetchWithTimeout(
+      `${ctx.baseUrl}/backend-api/files`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          file_name: attachment.name,
+          file_size: attachment.size,
+          use_case: "multimodal",
+          timezone_offset_min: DEFAULT_TZ_OFFSET_MIN,
+          reset_rate_limits: false,
+          supports_direct_azure_multipart: true,
+          mime_type: attachment.mimeType,
+          entry_surface: "chat_composer",
+          selection_method: "file_picker",
+          client_resolved_mime_type: attachment.mimeType,
+          mime_resolution_source: "filename_extension",
+          store_in_library: false,
+        }),
+      },
+      UPLOAD_TIMEOUT_MS,
+      signal
+    );
+    if (!regRes.ok) {
+      throw new ChatGptWebImageError(`ChatGPT reference image registration failed (HTTP ${regRes.status})`, regRes.status || 502);
+    }
+    const regPayload = await regRes.json().catch(() => null);
+    if (!regPayload?.file_id || !regPayload?.upload_url) {
+      throw new ChatGptWebImageError("ChatGPT reference image registration returned an invalid response", 502);
+    }
+
+    const putRes = await fetchWithTimeout(
+      regPayload.upload_url,
+      {
+        method: "PUT",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": attachment.mimeType,
+          "x-ms-blob-type": "BlockBlob",
+          "x-ms-version": "2020-04-08",
+        },
+        body: new Uint8Array(attachment.data),
+      },
+      UPLOAD_TIMEOUT_MS,
+      signal
+    );
+    if (!putRes.ok) {
+      throw new ChatGptWebImageError(`ChatGPT reference image upload failed (HTTP ${putRes.status})`, putRes.status || 502);
+    }
+
+    const procRes = await fetchWithTimeout(
+      `${ctx.baseUrl}/backend-api/files/process_upload_stream`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          file_id: regPayload.file_id,
+          use_case: "multimodal",
+          index_for_retrieval: false,
+          file_name: attachment.name,
+          entry_surface: "chat_composer",
+          metadata: {
+            store_in_library: false,
+            is_temporary_chat: true,
+            library_eligibility_reason: "eligible",
+            is_project_thread: false,
+          },
+        }),
+      },
+      UPLOAD_TIMEOUT_MS,
+      signal
+    );
+    await procRes.text().catch(() => "");
+    if (!procRes.ok) {
+      throw new ChatGptWebImageError(`ChatGPT reference image processing failed (HTTP ${procRes.status})`, procRes.status || 502);
+    }
+
+    uploaded.push({
+      fileId: regPayload.file_id,
+      name: attachment.name,
+      mimeType: attachment.mimeType,
+      size: attachment.size,
+      width: attachment.width,
+      height: attachment.height,
+    });
+  }
+
+  return uploaded;
+}
+
 /** prepare → conversation SSE. Returns the conversation id plus any ids seen. */
-async function runImageConversation(ctx, prompt, sizeHint, signal) {
+async function runImageConversation(ctx, prompt, sizeHint, uploadedImages, excludeIds, signal) {
   const { baseUrl } = ctx;
   const headers = authHeaders(ctx);
+  const text = sizeHint ? `${prompt} (aspect ratio ${sizeHint})` : prompt;
+
+  const content = uploadedImages.length > 0
+    ? {
+        content_type: "multimodal_text",
+        parts: [
+          ...uploadedImages.map((item) => ({
+            content_type: "image_asset_pointer",
+            asset_pointer: `sediment://${item.fileId}`,
+            size_bytes: item.size,
+            width: item.width,
+            height: item.height,
+          })),
+          text,
+        ],
+      }
+    : { content_type: "text", parts: [text] };
+
+  const attachments = uploadedImages.map((item) => ({
+    id: item.fileId,
+    size: item.size,
+    name: item.name,
+    mime_type: item.mimeType,
+    width: item.width,
+    height: item.height,
+    source: "local",
+    is_big_paste: false,
+  }));
 
   const prepare = await fetchWithTimeout(`${baseUrl}/backend-api/f/conversation/prepare`, {
     method: "POST",
@@ -112,7 +287,7 @@ async function runImageConversation(ctx, prompt, sizeHint, signal) {
       partial_query: {
         id: randomUUID(),
         author: { role: "user" },
-        content: { content_type: "text", parts: [prompt] },
+        content,
       },
       supports_buffering: true,
       supported_encodings: ["v1"],
@@ -125,7 +300,6 @@ async function runImageConversation(ctx, prompt, sizeHint, signal) {
   const prepareJson = await prepare.json().catch(() => null);
   const conduitToken = prepareJson?.conduit_token || "";
 
-  const text = sizeHint ? `${prompt} (aspect ratio ${sizeHint})` : prompt;
   const conversation = await fetchWithTimeout(`${baseUrl}/backend-api/f/conversation`, {
     method: "POST",
     headers: {
@@ -141,12 +315,13 @@ async function runImageConversation(ctx, prompt, sizeHint, signal) {
         id: randomUUID(),
         author: { role: "user" },
         create_time: Date.now() / 1000,
-        content: { content_type: "text", parts: [text] },
+        content,
         metadata: {
           developer_mode_connector_ids: [],
           selected_github_repos: [],
           selected_all_github_repos: false,
           system_hints: ["picture_v2"],
+          ...(attachments.length > 0 ? { attachments } : {}),
           serialization_metadata: { custom_symbol_offsets: [] },
         },
       }],
@@ -182,12 +357,12 @@ async function runImageConversation(ctx, prompt, sizeHint, signal) {
   const conversationId = (sseText.match(/"conversation_id"\s*:\s*"([0-9a-f-]{36})"/) || [])[1] || "";
   const fileIds = [];
   const sedimentIds = [];
-  collectIds(sseText, fileIds, sedimentIds);
+  collectIds(sseText, fileIds, sedimentIds, excludeIds);
   return { conversationId, fileIds, sedimentIds };
 }
 
 /** Poll the conversation document until an image_gen record shows up. */
-async function pollConversationImages(ctx, conversationId, initial, { signal, log }) {
+async function pollConversationImages(ctx, conversationId, initial, excludeIds, { signal, log }) {
   const started = Date.now();
   const fileIds = [...initial.fileIds];
   const sedimentIds = [...initial.sedimentIds];
@@ -213,7 +388,7 @@ async function pollConversationImages(ctx, conversationId, initial, { signal, lo
       throw new ChatGptWebImageError("ChatGPT conversation document is unexpectedly large", 502);
     }
 
-    collectIds(text, fileIds, sedimentIds);
+    collectIds(text, fileIds, sedimentIds, excludeIds);
     if (fileIds.length > 0 || sedimentIds.length > 0) {
       return { fileIds: fileIds.filter((id) => id !== "file_upload"), sedimentIds };
     }
@@ -233,8 +408,54 @@ async function pollConversationImages(ctx, conversationId, initial, { signal, lo
   throw new ChatGptWebImageError("ChatGPT image generation timed out", 504);
 }
 
-async function downloadUrl(url, signal) {
-  const res = await fetchWithTimeout(url, {}, DOWNLOAD_TIMEOUT_MS, signal);
+function isFirstPartyDownloadUrl(url, baseUrl) {
+  try {
+    const parsed = new URL(url, baseUrl);
+    const baseHost = new URL(baseUrl).hostname.toLowerCase();
+    const host = parsed.hostname.toLowerCase();
+    return host === baseHost || host.endsWith(".chatgpt.com") || host === "chatgpt.com";
+  } catch {
+    return false;
+  }
+}
+
+async function downloadUrl(ctx, rawUrl, signal) {
+  const resolvedUrl = rawUrl.startsWith("/") ? `${ctx.baseUrl}${rawUrl}` : rawUrl;
+  const firstParty = isFirstPartyDownloadUrl(resolvedUrl, ctx.baseUrl);
+  const firstPartyHeaders = {
+    Authorization: `Bearer ${ctx.accessToken}`,
+    "User-Agent": ctx.userAgent,
+    Referer: `${ctx.baseUrl}/`,
+    ...(ctx.cookie ? { Cookie: ctx.cookie } : {}),
+  };
+
+  let res = await fetchWithTimeout(
+    resolvedUrl,
+    firstParty
+      ? { headers: firstPartyHeaders, redirect: "manual" }
+      : { headers: { "User-Agent": ctx.userAgent } },
+    DOWNLOAD_TIMEOUT_MS,
+    signal
+  ).catch(() => null);
+  if (!res) return null;
+
+  // Follow a redirect from first-party estuary/content to an external signed blob URL without leaking Authorization
+  if (res.status >= 300 && res.status < 400) {
+    const location = res.headers.get("location");
+    if (!location) return null;
+    const redirectUrl = new URL(location, resolvedUrl).toString();
+    const redirectFirstParty = isFirstPartyDownloadUrl(redirectUrl, ctx.baseUrl);
+    res = await fetchWithTimeout(
+      redirectUrl,
+      redirectFirstParty
+        ? { headers: firstPartyHeaders }
+        : { headers: { "User-Agent": ctx.userAgent } },
+      DOWNLOAD_TIMEOUT_MS,
+      signal
+    ).catch(() => null);
+    if (!res) return null;
+  }
+
   if (!res.ok) return null;
   const buffer = Buffer.from(await res.arrayBuffer());
   if (!buffer.length) return null;
@@ -255,7 +476,7 @@ async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentId
     const body = await res.json().catch(() => null);
     const url = body?.download_url || body?.url || "";
     if (!url) continue;
-    const media = await downloadUrl(url, signal);
+    const media = await downloadUrl(ctx, url, signal);
     if (media) return media;
   }
 
@@ -270,7 +491,7 @@ async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentId
     const body = await res.json().catch(() => null);
     const url = body?.download_url || body?.url || "";
     if (!url) continue;
-    const media = await downloadUrl(url, signal);
+    const media = await downloadUrl(ctx, url, signal);
     if (media) return media;
   }
 
@@ -287,6 +508,7 @@ async function downloadGeneratedImage(ctx, conversationId, { fileIds, sedimentId
  * @param {string} options.userAgent
  * @param {string} options.prompt
  * @param {string} [options.sizeHint]
+ * @param {string[]} [options.images]
  * @param {AbortSignal} [options.signal]
  * @returns {Promise<{b64: string, mime: string}>}
  */
@@ -297,6 +519,7 @@ export async function generateChatGptWebImageHttp({
   userAgent,
   prompt,
   sizeHint,
+  images,
   signal,
   log,
 }) {
@@ -306,13 +529,16 @@ export async function generateChatGptWebImageHttp({
   const sentinel = await fetchSentinelHeaders({ baseUrl, accessToken, userAgent, signal });
   const ctx = { baseUrl, accessToken, cookie, userAgent, sentinel };
 
-  const initial = await runImageConversation(ctx, prompt, sizeHint, signal);
+  const uploadedImages = await uploadReferenceImagesHttp(ctx, images, signal);
+  const excludeIds = new Set(uploadedImages.map((item) => item.fileId));
+
+  const initial = await runImageConversation(ctx, prompt, sizeHint, uploadedImages, excludeIds, signal);
   if (!initial.conversationId && initial.fileIds.length === 0 && initial.sedimentIds.length === 0) {
     throw new ChatGptWebImageError("ChatGPT image conversation produced no conversation id", 502);
   }
   const ids = initial.fileIds.length > 0 || initial.sedimentIds.length > 0
     ? initial
-    : await pollConversationImages(ctx, initial.conversationId, initial, { signal, log });
+    : await pollConversationImages(ctx, initial.conversationId, initial, excludeIds, { signal, log });
 
   return downloadGeneratedImage(ctx, initial.conversationId, ids, signal);
 }

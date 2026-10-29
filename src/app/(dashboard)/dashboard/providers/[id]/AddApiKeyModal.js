@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import { Button, Badge, Input, Modal, Select } from "@/shared/components";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
@@ -13,19 +13,13 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const isOllamaLocal = provider === "ollama-local";
   const isCookie = authType === "cookie";
   const isXaiApiKey = provider === "xai" && !isCookie;
-  const credentialLabel = isCookie ? "Cookie Value" : provider === "qoder" || provider === "qoder-cn" ? "Personal Access Token (PAT)" : "API Key";
-  const credentialPlaceholder = isCookie
-    ? (provider === "grok-web" ? "sso=xxxxx... or just the raw value" : "eyJhbGciOi...")
-    : (isXaiApiKey ? "xai-..." : provider === "qoder" || provider === "qoder-cn" ? "pt-..." : "");
+  const credentialLabel = isCookie ? "Cookie" : provider === "qoder" || provider === "qoder-cn" ? "Personal Access Token (PAT)" : "API Key";
+  const credentialPlaceholder = isXaiApiKey ? "xai-..." : provider === "qoder" || provider === "qoder-cn" ? "pt-..." : "";
 
   const isAzure = provider === "azure";
   const isCloudflareAi = provider === "cloudflare-ai";
-  // Capability, not identity: gating this on `provider === "bedrock"` left bedrock-xai with no
-  // way to enter a profile at all, which is the same mistake as hardcoding the API-key exemption.
   const usesAwsCredentialForm =
     AI_PROVIDERS?.[provider]?.credentialForm === "aws";
-  // Registry-declared: names the providerSpecificData field that stands in for an API key, so
-  // a provider whose credential lives outside the key field can be saved without one.
   const apiKeyOptionalWith = AI_PROVIDERS?.[provider]?.apiKeyOptionalWith || null;
   const providerRegions = AI_PROVIDERS?.[provider]?.regions || null;
   const defaultRegion = AI_PROVIDERS?.[provider]?.defaultRegion || providerRegions?.[0]?.id || "";
@@ -38,6 +32,11 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     proxyPoolId: NONE_PROXY_POOL_VALUE,
     ollamaHostUrl: "",
   });
+  const [cookieSourceLabel, setCookieSourceLabel] = useState("");
+  const [clipboardError, setClipboardError] = useState("");
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const fileInputRef = useRef(null);
+
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -65,6 +64,63 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const [bulkText, setBulkText] = useState("");
   const [bulkResult, setBulkResult] = useState(null); // { success, failed }
 
+  useEffect(() => {
+    if (!isOpen) {
+      setCookieSourceLabel("");
+      setClipboardError("");
+      setIsDraggingFile(false);
+      setValidationResult(null);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen || !isCookie) return;
+    const onWindowPaste = (e) => {
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const text = e.clipboardData?.getData("text/plain")?.trim();
+      if (text) {
+        e.preventDefault();
+        setClipboardError("");
+        setCookieSourceLabel("Đã dán từ Clipboard (Ctrl+V)");
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      }
+    };
+    window.addEventListener("paste", onWindowPaste);
+    return () => window.removeEventListener("paste", onWindowPaste);
+  }, [isOpen, isCookie]);
+
+  const handlePasteClipboard = async () => {
+    setClipboardError("");
+    try {
+      const text = (await navigator.clipboard.readText())?.trim();
+      if (text) {
+        setCookieSourceLabel("Đã dán từ Clipboard");
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      } else {
+        setClipboardError("Clipboard đang trống. Hãy copy cookie trước hoặc nhấn Ctrl+V.");
+      }
+    } catch {
+      setClipboardError("Trình duyệt chặn đọc Clipboard tự động — hãy nhấn tổ hợp phím Ctrl+V ngay tại cửa sổ này.");
+    }
+  };
+
+  const handleReadCookieFile = async (file) => {
+    if (!file) return;
+    setClipboardError("");
+    try {
+      const text = (await file.text())?.trim();
+      if (text) {
+        setCookieSourceLabel(`File: ${file.name}`);
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      } else {
+        setClipboardError(`File "${file.name}" đang trống.`);
+      }
+    } catch {
+      setClipboardError("Không thể đọc file đã chọn.");
+    }
+  };
+
   const buildProviderSpecificData = () => {
     if (isOllamaLocal && formData.ollamaHostUrl.trim()) {
       return { baseUrl: formData.ollamaHostUrl.trim() };
@@ -81,8 +137,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
       return { accountId: cloudflareData.accountId };
     }
     if (usesAwsCredentialForm) {
-      // Only send what the user filled in: an empty `profile` would otherwise select profile
-      // mode and shadow static keys, since detectCredentialMode prefers a profile.
       const data = {};
       if (bedrockData.profile.trim()) data.profile = bedrockData.profile.trim();
       if (bedrockData.region.trim()) data.region = bedrockData.region.trim();
@@ -96,13 +150,9 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     return undefined;
   };
 
-  // One place decides whether the credential requirement is met. The button's disabled state and
-  // handleSubmit's early return both read it; encoding the rule twice is what let Save look
-  // clickable while silently doing nothing for profile-only Bedrock connections.
   const apiKeySatisfied = () => {
     const psd = buildProviderSpecificData();
     if (apiKeyOptionalWith && psd?.[apiKeyOptionalWith]) return true;
-    // AWS static keys are a pair: a secret alone saves a connection that can never sign.
     if (usesAwsCredentialForm) return !!formData.apiKey && !!psd?.accessKeyId;
     return !!formData.apiKey;
   };
@@ -127,8 +177,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const handleSubmit = async () => {
     if (!provider) return;
     if (!isOllamaLocal && !apiKeySatisfied()) return;
-    if (!isOllamaLocal) {
-      // Non-ollama providers require a name
+    if (!isOllamaLocal && !isCookie) {
       if (!formData.name) return;
     }
     if (isCompatible && !formData.defaultModel.trim()) return;
@@ -136,6 +185,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     setSaving(true);
     try {
       let isValid = false;
+      let validatedEmail = "";
+      let validatedName = "";
       try {
         setValidating(true);
         setValidationResult(null);
@@ -146,6 +197,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         });
         const data = await res.json();
         isValid = !!data.valid;
+        validatedEmail = data.email || "";
+        validatedName = data.name || "";
         setValidationResult(isValid ? "success" : "failed");
       } catch {
         setValidationResult("failed");
@@ -154,7 +207,8 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
       }
 
       await onSave({
-        name: formData.name || (isOllamaLocal ? "Ollama Local" : ""),
+        name: formData.name.trim() || validatedEmail || validatedName || (isOllamaLocal ? "Ollama Local" : isCookie ? `${providerName || provider} Cookie` : ""),
+        email: validatedEmail || undefined,
         apiKey: formData.apiKey,
         defaultModel: isCompatible ? formData.defaultModel.trim() : undefined,
         priority: formData.priority,
@@ -170,9 +224,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   const handleBulkSubmit = async () => {
     const lines = bulkText.split("\n");
     if (!lines.length) return;
-    // Plan collision-free names against existing connections so a generated
-    // "Key N" never matches a saved name (which the backend would upsert /
-    // overwrite instead of inserting). See bulkAdd.js for the full rationale.
     const plan = planBulkAdd(lines, existingNames, { isCloudflareAi });
     if (!plan.length) return;
     setSaving(true);
@@ -181,9 +232,6 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
     let failed = 0;
     for (const entry of plan) {
       try {
-        // Validate each key before saving so bulk-added connections get a
-        // real status (active/unknown) like single adds, instead of a
-        // hardcoded "unknown" that never flips until a manual test.
         let isValid = false;
         try {
           const vres = await fetch("/api/providers/validate", {
@@ -224,16 +272,14 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
   return (
     <Modal isOpen={isOpen} title={`Add ${providerName || provider} ${credentialLabel}`} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        {/* Mode switcher. Hidden for AWS credentials: bulk lines carry only a key, so a
-            Bedrock entry would be saved with no access key id or profile and never work. */}
-        {!usesAwsCredentialForm && (
+        {!usesAwsCredentialForm && !isCookie && (
           <div className="flex gap-2">
             <Button size="sm" variant={mode === "single" ? "primary" : "ghost"} onClick={() => { setMode("single"); setBulkResult(null); }}>Single</Button>
             <Button size="sm" variant={mode === "bulk" ? "primary" : "ghost"} onClick={() => { setMode("bulk"); setBulkResult(null); }}>Bulk Add</Button>
           </div>
         )}
 
-        {mode === "bulk" && (
+        {mode === "bulk" && !isCookie && (
           <div className="flex flex-col gap-3">
             <p className="text-xs text-text-muted">
               {isCloudflareAi
@@ -244,7 +290,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
               }
             </p>
             <textarea
-              className="w-full rounded border border-accent/30 bg-sidebar p-2 text-sm font-mono resize-y min-h-[140px] focus:outline-none focus:ring-1 focus:ring-primary"
+              className="w-full rounded border border-accent/30 bg-sidebar p-2 text-sm font-mono resize-y min-h-35 focus:outline-none focus:ring-1 focus:ring-primary"
               placeholder={bulkPlaceholder}
               value={bulkText}
               onChange={(e) => setBulkText(e.target.value)}
@@ -263,12 +309,12 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           </div>
         )}
 
-        {mode === "single" && (<>
+        {(mode === "single" || isCookie) && (<>
         <Input
-          label="Name"
+          label={isCookie ? "Tên gợi nhớ (tùy chọn)" : "Name"}
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-          placeholder={isOllamaLocal ? "Ollama Local" : "Production Key"}
+          placeholder={isOllamaLocal ? "Ollama Local" : isCookie ? `${providerName || provider} Account` : "Production Key"}
         />
         {isOllamaLocal && (
           <div className="flex gap-2">
@@ -286,11 +332,89 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
             </div>
           </div>
         )}
-        {!isOllamaLocal && (
+        {!isOllamaLocal && isCookie && (
+          <div className="flex flex-col gap-2.5">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.json,.cookies,.har,text/plain,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleReadCookieFile(f);
+                e.target.value = "";
+              }}
+            />
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
+              onDragLeave={() => setIsDraggingFile(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDraggingFile(false);
+                const f = e.dataTransfer?.files?.[0];
+                if (f) handleReadCookieFile(f);
+              }}
+              className={`rounded-xl border border-dashed p-4 transition-colors ${isDraggingFile ? "border-primary bg-primary/5" : "border-border bg-black/2 dark:bg-white/2"}`}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  className="flex flex-col items-center justify-center gap-1.5 p-3.5 rounded-lg border border-border bg-background hover:border-primary hover:bg-primary/5 transition-colors text-center"
+                >
+                  <span className="material-symbols-outlined text-2xl text-primary">upload_file</span>
+                  <span className="text-xs font-semibold text-text-main">Chọn File (.txt / .json)</span>
+                  <span className="text-[11px] text-text-muted">Hoặc kéo thả file vào đây</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePasteClipboard}
+                  className="flex flex-col items-center justify-center gap-1.5 p-3.5 rounded-lg border border-border bg-background hover:border-primary hover:bg-primary/5 transition-colors text-center"
+                >
+                  <span className="material-symbols-outlined text-2xl text-primary">content_paste</span>
+                  <span className="text-xs font-semibold text-text-main">Dán từ Clipboard</span>
+                  <span className="text-[11px] text-text-muted">Bấm vào đây hoặc nhấn Ctrl+V</span>
+                </button>
+              </div>
+              <p className="mt-2.5 text-center text-[11px] text-text-muted">
+                Hỗ trợ: Get cookies.txt LOCALLY (.txt) • J2TEAM Cookies (.json) • Cookie-Editor • EditThisCookie
+              </p>
+            </div>
+
+            {clipboardError && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                {clipboardError}
+              </div>
+            )}
+
+            {formData.apiKey && (
+              <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="material-symbols-outlined text-[16px] text-emerald-500">check_circle</span>
+                  <span className="font-medium truncate">{cookieSourceLabel || "Đã nạp dữ liệu Cookie"}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={handleValidate} disabled={validating || saving} variant="secondary">
+                    {validating ? "Checking..." : "Check"}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => { setFormData({ ...formData, apiKey: "" }); setCookieSourceLabel(""); setValidationResult(null); }}
+                    className="text-xs text-text-muted hover:text-red-500 px-1.5 py-0.5"
+                  >
+                    Xóa
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {!isOllamaLocal && !isCookie && (
           <div className="flex gap-2">
             <Input
               label={credentialLabel}
-              type={isCookie ? "text" : "password"}
+              type="password"
               value={formData.apiKey}
               onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
               placeholder={credentialPlaceholder}
@@ -310,14 +434,10 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         )}
         {isCookie && authHint && (
           <p className="text-xs text-text-muted">
-            {authHint}
             {website && (
-              <>
-                {" "}
-                <a href={website} target="_blank" rel="noopener noreferrer" className="text-primary underline">
-                  Open {website.replace(/^https?:\/\//, "")}
-                </a>
-              </>
+              <a href={website} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                Open {website.replace(/^https?:\/\//, "")}
+              </a>
             )}
           </p>
         )}
@@ -348,7 +468,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
           </Badge>
         )}
         {error && (
-          <p className="text-xs text-red-500 break-words">{error}</p>
+          <p className="text-xs text-red-500 wrap-break-word">{error}</p>
         )}
         {isCompatible && (
           <p className="text-xs text-text-muted">
@@ -473,7 +593,7 @@ export default function AddApiKeyModal({ isOpen, provider, providerName, isCompa
         </p>
 
         <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && (!formData.name || !apiKeySatisfied())) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
+          <Button onClick={handleSubmit} fullWidth disabled={saving || (!isOllamaLocal && ((!isCookie && !formData.name) || !apiKeySatisfied())) || (isCompatible && !formData.defaultModel.trim()) || (isAzure && (!azureData.azureEndpoint || !azureData.deployment || !azureData.organization)) || (isCloudflareAi && !cloudflareData.accountId)}>
             {saving ? "Saving..." : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>

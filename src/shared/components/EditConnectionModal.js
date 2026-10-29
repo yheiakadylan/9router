@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import Modal from "@/shared/components/Modal";
 import Input from "@/shared/components/Input";
@@ -15,6 +15,9 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     priority: 1,
     apiKey: "",
   });
+  const [cookieSourceLabel, setCookieSourceLabel] = useState("");
+  const [clipboardError, setClipboardError] = useState("");
+  const fileInputRef = useRef(null);
   const [azureData, setAzureData] = useState({
     azureEndpoint: "",
     apiVersion: "2024-10-01-preview",
@@ -31,6 +34,16 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
 
+  const isOAuth = connection?.authType === "oauth";
+  const isCookie = connection?.authType === "cookie" || AI_PROVIDERS?.[connection?.provider]?.authType === "cookie";
+  const isAzure = connection?.provider === "azure";
+  const isCloudflareAi = connection?.provider === "cloudflare-ai";
+  const usesAwsCredentialForm = AI_PROVIDERS?.[connection?.provider]?.credentialForm === "aws";
+  const isCompatible = connection
+    ? (isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider))
+    : false;
+  const providerRegions = connection ? (AI_PROVIDERS?.[connection.provider]?.regions || null) : null;
+
   useEffect(() => {
     if (connection) {
       setFormData({
@@ -38,7 +51,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         priority: connection.priority || 1,
         apiKey: "",
       });
-      // Load Azure-specific data if present
+      setCookieSourceLabel("");
+      setClipboardError("");
       if (connection.provider === "azure" && connection.providerSpecificData) {
         setAzureData({
           azureEndpoint: connection.providerSpecificData.azureEndpoint || "",
@@ -60,7 +74,6 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         });
         setClearAwsSessionToken(false);
       }
-      // Load region for providers that support it (e.g. xiaomi-tokenplan)
       const providerCfg = AI_PROVIDERS?.[connection.provider];
       if (providerCfg?.regions) {
         const savedRegion = connection.providerSpecificData?.region || providerCfg.defaultRegion || providerCfg.regions[0]?.id || "";
@@ -71,23 +84,40 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     }
   }, [connection, isOpen]);
 
-  const isOAuth = connection?.authType === "oauth";
-  const isAzure = connection?.provider === "azure";
-  const isCloudflareAi = connection?.provider === "cloudflare-ai";
-  const usesAwsCredentialForm = AI_PROVIDERS?.[connection?.provider]?.credentialForm === "aws";
-  const isCompatible = connection
-    ? (isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider))
-    : false;
-  const providerRegions = connection ? (AI_PROVIDERS?.[connection.provider]?.regions || null) : null;
+  const handlePasteClipboard = async () => {
+    setClipboardError("");
+    try {
+      const text = (await navigator.clipboard.readText())?.trim();
+      if (text) {
+        setCookieSourceLabel("Đã dán từ Clipboard");
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      } else {
+        setClipboardError("Clipboard đang trống.");
+      }
+    } catch {
+      setClipboardError("Trình duyệt chặn đọc Clipboard tự động — hãy chọn file (.txt / .json).");
+    }
+  };
 
-  // Build providerSpecificData for region-aware providers
+  const handleReadCookieFile = async (file) => {
+    if (!file) return;
+    setClipboardError("");
+    try {
+      const text = (await file.text())?.trim();
+      if (text) {
+        setCookieSourceLabel(`File: ${file.name}`);
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      }
+    } catch {
+      setClipboardError("Không thể đọc file đã chọn.");
+    }
+  };
+
   const buildRegionSpecificData = () => {
     if (providerRegions && region) return { ...((connection?.providerSpecificData) || {}), region };
     return undefined;
   };
 
-  // The server keeps a saved session token when this password field is blank. Other empty
-  // fields still clear their saved values so a profile can be switched to static keys.
   const buildAwsSpecificData = () => ({
     profile: awsData.profile.trim(),
     region: awsData.region.trim(),
@@ -178,8 +208,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           updates.lastErrorAt = null;
         }
       }
-      
-      // Add Azure-specific data if this is an Azure connection
+
       if (isAzure) {
         updates.providerSpecificData = {
           azureEndpoint: azureData.azureEndpoint,
@@ -194,11 +223,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       if (usesAwsCredentialForm) {
         updates.providerSpecificData = buildAwsSpecificData();
       }
-      // Persist updated region for region-aware providers
       if (providerRegions && region) {
         updates.providerSpecificData = buildRegionSpecificData();
       }
-      
+
       await onSave(updates);
     } finally {
       setSaving(false);
@@ -214,12 +242,12 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           label="Name"
           value={formData.name}
           onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-          placeholder={isOAuth ? "Account name" : "Production Key"}
+          placeholder={isOAuth || isCookie ? "Account name" : "Production Key"}
         />
-        {isOAuth && connection.email && (
+        {(isOAuth || isCookie) && connection.email && (
           <div className="bg-sidebar/50 p-3 rounded-lg">
-            <p className="text-sm text-text-muted mb-1">Email</p>
-            <p className="font-medium">{connection.email}</p>
+            <p className="text-xs text-text-muted mb-0.5">Email</p>
+            <p className="text-sm font-medium">{connection.email}</p>
           </div>
         )}
         <Input
@@ -229,7 +257,67 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
         />
 
-        {!isOAuth && (
+        {!isOAuth && isCookie && (
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-text-muted">
+              Cập nhật Cookie mới <span className="opacity-70">(bỏ qua nếu muốn giữ nguyên cookie hiện tại)</span>
+            </label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.json,.cookies,.har,text/plain,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleReadCookieFile(f);
+                e.target.value = "";
+              }}
+            />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:border-primary text-text-main transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">upload_file</span>
+                Chọn File (.txt / .json)
+              </button>
+              <button
+                type="button"
+                onClick={handlePasteClipboard}
+                className="flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-border bg-background hover:border-primary text-text-main transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px] text-primary">content_paste</span>
+                Dán từ Clipboard
+              </button>
+            </div>
+            {clipboardError && <p className="text-xs text-amber-500">{clipboardError}</p>}
+            {formData.apiKey && (
+              <div className="flex items-center justify-between gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-1.5 text-xs">
+                <span className="font-medium truncate">{cookieSourceLabel || "Đã chọn Cookie mới"}</span>
+                <div className="flex items-center gap-2">
+                  <Button size="sm" onClick={handleValidate} disabled={validating || saving} variant="secondary">
+                    {validating ? "Checking..." : "Check"}
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => { setFormData({ ...formData, apiKey: "" }); setCookieSourceLabel(""); setValidationResult(null); }}
+                    className="text-xs text-text-muted hover:text-red-500"
+                  >
+                    Xóa
+                  </button>
+                </div>
+              </div>
+            )}
+            {validationResult && (
+              <Badge variant={validationResult === "success" ? "success" : "error"}>
+                {validationResult === "success" ? "Valid" : "Invalid"}
+              </Badge>
+            )}
+          </div>
+        )}
+
+        {!isOAuth && !isCookie && (
           <>
             <div className="flex gap-2">
               <Input

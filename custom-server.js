@@ -189,6 +189,9 @@ function proxyRequest(req, res, targetPort) {
     }
   });
   req.on("aborted", () => upstream.destroy());
+  res.once("close", () => {
+    if (!res.writableEnded) upstream.destroy();
+  });
   req.pipe(upstream);
 }
 

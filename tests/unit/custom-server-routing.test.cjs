@@ -61,3 +61,45 @@ test("proxies request bodies and streamed responses", async () => {
     await new Promise((resolve) => backend.close(resolve));
   }
 });
+
+test("closes the upstream stream when the downstream client disconnects", async () => {
+  let resolveUpstreamClosed;
+  const upstreamClosed = new Promise((resolve) => { resolveUpstreamClosed = resolve; });
+  const backend = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write("data: ready\n\n");
+    res.once("close", resolveUpstreamClosed);
+  });
+  await new Promise((resolve) => backend.listen(0, "127.0.0.1", resolve));
+
+  const frontend = http.createServer((req, res) => proxyRequest(req, res, backend.address().port));
+  await new Promise((resolve) => frontend.listen(0, "127.0.0.1", resolve));
+
+  const clientRequest = http.get(`http://127.0.0.1:${frontend.address().port}/api/usage/stream`);
+  clientRequest.on("error", () => {});
+
+  try {
+    await new Promise((resolve, reject) => {
+      clientRequest.once("response", (response) => {
+        response.once("data", () => {
+          response.destroy();
+          resolve();
+        });
+      });
+      clientRequest.once("error", reject);
+    });
+
+    await Promise.race([
+      upstreamClosed,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("upstream stream remained open")), 2000)),
+    ]);
+  } finally {
+    clientRequest.destroy();
+    frontend.closeAllConnections?.();
+    backend.closeAllConnections?.();
+    await Promise.all([
+      new Promise((resolve) => frontend.close(resolve)),
+      new Promise((resolve) => backend.close(resolve)),
+    ]);
+  }
+});

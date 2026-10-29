@@ -14,6 +14,7 @@ services:
       NODE_ENV: production
       API_WORKERS: "4"
       UV_THREADPOOL_SIZE: "8"
+      NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE: "128mb"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:20128/api/health"]
       interval: 10s

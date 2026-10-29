@@ -37,13 +37,55 @@ function createId(prefix) {
   return globalThis.crypto?.randomUUID?.() || `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function fileToDataUrl(file) {
+function readRawDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(reader.error || new Error("Failed to read image"));
     reader.readAsDataURL(file);
   });
+}
+
+async function fileToDataUrl(file) {
+  const rawDataUrl = await readRawDataUrl(file);
+  if (!file || file.size <= 512 * 1024 || typeof document === "undefined" || typeof Image === "undefined") {
+    return rawDataUrl;
+  }
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("Failed to decode image"));
+      element.src = rawDataUrl;
+    });
+    const srcWidth = img.naturalWidth || img.width || 1;
+    const srcHeight = img.naturalHeight || img.height || 1;
+    const maxDim = 1536;
+    const scale = Math.min(1, maxDim / Math.max(srcWidth, srcHeight));
+    const width = Math.max(1, Math.round(srcWidth * scale));
+    const height = Math.max(1, Math.round(srcHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return rawDataUrl;
+    if (file.type === "image/png") {
+      ctx.drawImage(img, 0, 0, width, height);
+      const pngDataUrl = canvas.toDataURL("image/png");
+      if (pngDataUrl.length <= 750_000) return pngDataUrl.length < rawDataUrl.length ? pngDataUrl : rawDataUrl;
+      ctx.clearRect(0, 0, width, height);
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    let compressed = canvas.toDataURL("image/jpeg", 0.85);
+    if (compressed.length > 750_000) {
+      compressed = canvas.toDataURL("image/jpeg", 0.72);
+    }
+    return compressed.length < rawDataUrl.length ? compressed : rawDataUrl;
+  } catch {
+    return rawDataUrl;
+  }
 }
 
 function imageSrc(value) {
@@ -544,12 +586,12 @@ export default function ImageGenerationPage() {
         setTextModel(
           hasCustomChatOrder
             ? (nextChatModels[0]?.id || "")
-            : (nextChatModels.find((model) => model.id === "cx/gpt-5.5")?.id || nextChatModels[0]?.id || "")
+            : ((nextChatModels.find((model) => model.id === "cx/gpt-6-sol" || model.id === "cx/gpt-5.5"))?.id || nextChatModels[0]?.id || "")
         );
         setImageModel(
           hasCustomImageOrder
             ? (nextImageModels[0]?.id || "")
-            : (nextImageModels.find((model) => model.id === "cx/gpt-5.5-image")?.id || nextImageModels[0]?.id || "")
+            : ((nextImageModels.find((model) => model.id === "cx/gpt-6-sol-image" || model.id === "cx/gpt-image-2.5" || model.id === "cx/gpt-5.5-image"))?.id || nextImageModels[0]?.id || "")
         );
         setApiKey((keysData.keys || []).find((key) => key.isActive !== false)?.key || "");
       } catch (loadError) {

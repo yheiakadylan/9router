@@ -64,11 +64,58 @@ jobs:
           envs: GHCR_TOKEN,GHCR_USER,IMAGE_NAME,IMAGE_TAG
           script: |
             set -eu
+            mkdir -p ~/9router
             cd ~/9router
             echo "$GHCR_TOKEN" | sudo docker login ghcr.io -u "$GHCR_USER" --password-stdin
             mkdir -p "$HOME/.9router"
 
-            # Ð?m b?o có swapfile d? VPS không b? OOM
+            cat > docker-compose.ec2.yml <<'EOF'
+            services:
+              9router:
+                image: ${IMAGE_NAME:-ghcr.io/yheiakadylan/9router}:${IMAGE_TAG:-latest}
+                container_name: 9router
+                restart: always
+                ports:
+                  - "20128:20128"
+                volumes:
+                  - "${ROUTER_DATA_DIR}:/app/data"
+                environment:
+                  DATA_DIR: /app/data
+                  PORT: "20128"
+                  HOSTNAME: 0.0.0.0
+                  NODE_ENV: production
+                  API_WORKERS: "4"
+                  UV_THREADPOOL_SIZE: "8"
+                  NINEROUTER_PROXY_CLIENT_MAX_BODY_SIZE: "128mb"
+                healthcheck:
+                  test: ["CMD", "wget", "-qO-", "http://127.0.0.1:20128/api/health"]
+                  interval: 10s
+                  timeout: 5s
+                  retries: 6
+                  start_period: 40s
+            EOF
+
+            # Configure Nginx reverse proxy client_max_body_size (fix 413 Request Entity Too Large)
+            if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx ]; then
+              echo "=== Configuring Nginx client_max_body_size ==="
+              for f in /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* /etc/nginx/sites-enabled/*; do
+                if [ -f "$f" ] && sudo grep -q "client_max_body_size" "$f" 2>/dev/null; then
+                  sudo sed -i -E 's/client_max_body_size[[:space:]]+[^;]+;/client_max_body_size 128M;/g' "$f" || true
+                fi
+              done
+              if ! sudo grep -rq "client_max_body_size" /etc/nginx/nginx.conf /etc/nginx/conf.d/ 2>/dev/null; then
+                sudo mkdir -p /etc/nginx/conf.d
+                printf 'client_max_body_size 128M;\n' | sudo tee /etc/nginx/conf.d/9router-body-size.conf >/dev/null
+              fi
+              if sudo nginx -t 2>/dev/null; then
+                sudo systemctl reload nginx 2>/dev/null || sudo service nginx reload 2>/dev/null || true
+                echo "Nginx reloaded with client_max_body_size 128M"
+              else
+                sudo rm -f /etc/nginx/conf.d/9router-body-size.conf 2>/dev/null || true
+              fi
+            fi
+
+            # Ensure swapfile exists to avoid OOM
             if ! swapon --show | grep -q "/swapfile"; then
               if [ ! -f /swapfile ]; then
                 echo "Creating 2G swapfile..."
@@ -85,7 +132,7 @@ jobs:
             echo "=== Checking port 20128 before cleanup ==="
             sudo ss -tulpn | grep 20128 || true
 
-            # 1. D?ng n?u có PM2 ho?c systemd dang qu?n lý 9router
+            # 1. Stop PM2 or systemd if managing 9router
             if command -v pm2 >/dev/null 2>&1; then
               pm2 stop all 2>/dev/null || true
               pm2 delete all 2>/dev/null || true
@@ -94,7 +141,7 @@ jobs:
             sudo systemctl stop 9router 2>/dev/null || true
             sudo systemctl disable 9router 2>/dev/null || true
 
-            # 2. D?n d?p b?t k? container Docker nào map port 20128 ho?c có tên 9router
+            # 2. Clean up any Docker container publishing port 20128 or named 9router
             sudo IMAGE_NAME="$IMAGE_NAME" IMAGE_TAG="$IMAGE_TAG" ROUTER_DATA_DIR="$HOME/.9router" \
               docker compose -f docker-compose.ec2.yml down --remove-orphans 2>/dev/null || true
             PORT_CONTAINERS=$(sudo docker ps -q --filter "publish=20128" 2>/dev/null || true)
@@ -103,7 +150,7 @@ jobs:
             fi
             sudo docker rm -f 9router 2>/dev/null || true
 
-            # 3. Gi?i phóng an toàn port 20128 b?ng PID c? th?
+            # 3. Safely free port 20128 by specific PID
             PORT_PIDS=$(sudo lsof -t -i:20128 2>/dev/null || true)
             for p in $PORT_PIDS; do
               if [ "$p" != "$$" ]; then

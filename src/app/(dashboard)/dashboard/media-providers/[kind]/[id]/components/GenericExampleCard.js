@@ -12,6 +12,7 @@ const CLOUDFLARE_TEST_MASK_URL = "https://pub-1fb693cb11cc46b2b2f656f51e015a2c.r
 const MULTI_REFERENCE_IMAGE_MODELS = new Set([
   "antigravity/gemini-3.1-flash-image",
   "codex/gpt-5.5-image",
+  "codex/gpt-6-sol-image",
 ]);
 // HuggingFace router edit models need a source image; reuse the public dog sample so
 // the card is runnable as-is. The router derives it from inputs, not from the Hub host.
@@ -38,13 +39,55 @@ function toImagePreviewSrc(value) {
   return `data:image/png;base64,${trimmed}`;
 }
 
-function fileToDataUrl(file) {
+function readRawDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(reader.error || new Error("Failed to read image"));
     reader.readAsDataURL(file);
   });
+}
+
+async function fileToDataUrl(file) {
+  const rawDataUrl = await readRawDataUrl(file);
+  if (!file || file.size <= 512 * 1024 || typeof document === "undefined" || typeof Image === "undefined") {
+    return rawDataUrl;
+  }
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const element = new Image();
+      element.onload = () => resolve(element);
+      element.onerror = () => reject(new Error("Failed to decode image"));
+      element.src = rawDataUrl;
+    });
+    const srcWidth = img.naturalWidth || img.width || 1;
+    const srcHeight = img.naturalHeight || img.height || 1;
+    const maxDim = 1536;
+    const scale = Math.min(1, maxDim / Math.max(srcWidth, srcHeight));
+    const width = Math.max(1, Math.round(srcWidth * scale));
+    const height = Math.max(1, Math.round(srcHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return rawDataUrl;
+    if (file.type === "image/png") {
+      ctx.drawImage(img, 0, 0, width, height);
+      const pngDataUrl = canvas.toDataURL("image/png");
+      if (pngDataUrl.length <= 750_000) return pngDataUrl.length < rawDataUrl.length ? pngDataUrl : rawDataUrl;
+      ctx.clearRect(0, 0, width, height);
+    }
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    let compressed = canvas.toDataURL("image/jpeg", 0.85);
+    if (compressed.length > 750_000) {
+      compressed = canvas.toDataURL("image/jpeg", 0.72);
+    }
+    return compressed.length < rawDataUrl.length ? compressed : rawDataUrl;
+  } catch {
+    return rawDataUrl;
+  }
 }
 
 function createRefId() {
@@ -278,7 +321,7 @@ export function GenericExampleCard({ providerId, kind }) {
         : {};
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        setError(data?.error?.message || data?.error || `HTTP ${res.status}`);
+        setError(data?.error?.message || data?.error || (res.status === 413 ? "HTTP 413: Request payload too large (reverse proxy limit exceeded)" : `HTTP ${res.status}`));
         return;
       }
       const ctype = res.headers.get("content-type") || "";
@@ -636,9 +679,7 @@ export function GenericExampleCard({ providerId, kind }) {
                     onChange={(e) => {
                       const file = e.target.files?.[0];
                       if (!file) return;
-                      const reader = new FileReader();
-                      reader.onload = () => setExtraValues((s) => ({ ...s, [f.key]: String(reader.result || "") }));
-                      reader.readAsDataURL(file);
+                      fileToDataUrl(file).then((dataUrl) => setExtraValues((s) => ({ ...s, [f.key]: dataUrl }))).catch(() => {});
                     }}
                   />
                 </label>

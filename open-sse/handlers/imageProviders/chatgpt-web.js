@@ -15,10 +15,16 @@ export default {
     const executor = getExecutor("chatgpt-web");
     if (!executor) throw new Error("ChatGPT Web executor not found");
 
+    const images = [
+      ...(Array.isArray(body.images) ? body.images : []),
+      ...(body.image != null && body.image !== "" ? [body.image] : []),
+    ];
+
     const media = await executor.generateMedia({
       prompt: body.prompt,
       n: Math.max(1, Math.min(4, Number(body.n) || 1)),
       size: body.size,
+      images,
       credentials,
       log,
     });

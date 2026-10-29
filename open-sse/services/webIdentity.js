@@ -119,7 +119,13 @@ const PROBES = {
     try { json = JSON.parse(res.text); } catch { return UNKNOWN("ChatGPT returned invalid JSON"); }
     const email = json?.user?.email;
     if (!email) return REJECTED("ChatGPT session is not signed in");
-    return OK(email);
+    return {
+      ...OK(email),
+      name: json?.user?.name || "",
+      planType: json?.account?.planType || "",
+      accountStructure: json?.account?.structure || "",
+      expires: json?.expires || "",
+    };
   },
 
   async "grok-web"(credential) {

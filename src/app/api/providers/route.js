@@ -11,6 +11,7 @@ import { AI_PROVIDERS, FREE_TIER_PROVIDERS, WEB_COOKIE_PROVIDERS, isOpenAICompat
 import { normalizeProviderId, normalizeProviderSpecificData } from "@/lib/providerNormalization";
 import { sortConnectionsForPriority } from "@/shared/utils/connectionPriority";
 import { toProviderConnectionResponse } from "@/lib/providerConnectionResponse";
+import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
 
 export const dynamic = "force-dynamic";
 
@@ -122,7 +123,14 @@ export async function POST(request) {
     if (!apiKey && provider !== "ollama-local" && !hasApiKeySubstitute) {
       return NextResponse.json({ error: `${isWebCookieProvider ? "Cookie value" : "API Key"} is required` }, { status: 400 });
     }
-    const connectionName = name || displayName || AI_PROVIDERS[provider]?.name;
+    let resolvedIdentity = null;
+    if (isWebCookieProvider && apiKey && hasWebIdentityProbe(provider)) {
+      try {
+        resolvedIdentity = await fetchWebIdentity(provider, apiKey);
+      } catch { /* ignore probe error on save */ }
+    }
+    const resolvedEmail = body.email || resolvedIdentity?.email || null;
+    const connectionName = name || displayName || resolvedEmail || resolvedIdentity?.name || AI_PROVIDERS[provider]?.name;
     if (!connectionName) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
     }
@@ -174,11 +182,15 @@ export async function POST(request) {
     if (proxyPoolId !== null) {
       mergedProviderSpecificData.proxyPoolId = proxyPoolId;
     }
+    if (resolvedIdentity?.planType) mergedProviderSpecificData.planType = resolvedIdentity.planType;
+    if (resolvedIdentity?.name) mergedProviderSpecificData.accountName = resolvedIdentity.name;
+    if (resolvedIdentity?.expires) mergedProviderSpecificData.sessionExpires = resolvedIdentity.expires;
 
     const newConnection = await createProviderConnection({
       provider,
       authType: isWebCookieProvider ? "cookie" : "apikey",
       name: connectionName,
+      email: resolvedEmail,
       apiKey: apiKey || "",
       priority: priority || 1,
       globalPriority: globalPriority || null,
@@ -188,7 +200,7 @@ export async function POST(request) {
       testStatus: testStatus || "unknown",
       // POST with an id is an explicit edit of that connection; without one, a
       // name collision is refused rather than silently overwriting a key. #4311
-      allowOverwrite: body.id ? true : (body.allowOverwrite === true || body.overwrite === true),
+      allowOverwrite: body.id ? true : (body.allowOverwrite === true || body.overwrite === true || isWebCookieProvider),
     });
 
     return NextResponse.json(

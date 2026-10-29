@@ -10,6 +10,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { acquireBrowserContext, openPage } from "../../services/browserPool.js";
+import { parseNetscapeCookieEntries, extractJsonCookieList } from "../../utils/webCookieAuth.js";
 import {
   extractChatGptWebAttachmentSources,
   isChatGptWebAttachmentContentPart,
@@ -76,7 +77,69 @@ function validateOrigin(value) {
   }
 }
 
+function coerceExtensionCookie(raw) {
+  if (!isRecord(raw) || typeof raw.name !== "string" || !raw.name || typeof raw.value !== "string") {
+    return raw;
+  }
+  const hasPlaywrightExpires = typeof raw.expires === "number" && Number.isFinite(raw.expires);
+  const hasPlaywrightSameSite = ["Strict", "Lax", "None"].includes(String(raw.sameSite));
+  if (
+    hasPlaywrightExpires &&
+    hasPlaywrightSameSite &&
+    typeof raw.httpOnly === "boolean" &&
+    typeof raw.secure === "boolean" &&
+    typeof raw.path === "string" &&
+    raw.path.startsWith("/")
+  ) {
+    return raw;
+  }
+  const expires = hasPlaywrightExpires
+    ? raw.expires
+    : typeof raw.expirationDate === "number" && Number.isFinite(raw.expirationDate)
+      ? raw.expirationDate
+      : -1;
+  const rawSameSite = String(raw.sameSite || "").toLowerCase();
+  const sameSite =
+    rawSameSite === "strict"
+      ? "Strict"
+      : rawSameSite === "none" || rawSameSite === "no_restriction"
+        ? "None"
+        : "Lax";
+  const secure =
+    typeof raw.secure === "boolean"
+      ? raw.secure
+      : raw.name.startsWith("__Secure-") || raw.name.startsWith("__Host-");
+  return {
+    name: raw.name,
+    value: raw.value,
+    domain: typeof raw.domain === "string" && raw.domain ? raw.domain : ".chatgpt.com",
+    path: typeof raw.path === "string" && raw.path.startsWith("/") ? raw.path : "/",
+    expires,
+    httpOnly: typeof raw.httpOnly === "boolean" ? raw.httpOnly : false,
+    secure,
+    sameSite,
+  };
+}
+
 export function normalizeChatGptWebStorageState(value) {
+  // Support J2TEAM Cookies ({ url, cookies: [...] }) and Cookie-Editor arrays ([...])
+  if (Array.isArray(value)) {
+    value = {
+      cookies: value.map(coerceExtensionCookie).filter((c) => isRecord(c) && typeof c.domain === "string" && isFirstPartyHost(c.domain)),
+      origins: [],
+    };
+  } else if (isRecord(value) && Array.isArray(value.cookies) && !Array.isArray(value.origins)) {
+    value = {
+      ...value,
+      cookies: value.cookies.map(coerceExtensionCookie).filter((c) => isRecord(c) && typeof c.domain === "string" && isFirstPartyHost(c.domain)),
+      origins: [],
+    };
+  } else if (isRecord(value) && Array.isArray(value.cookies)) {
+    value = {
+      ...value,
+      cookies: value.cookies.map(coerceExtensionCookie),
+    };
+  }
   if (!isRecord(value) || !Array.isArray(value.cookies) || !Array.isArray(value.origins)) {
     throw new Error("ChatGPT Web browser storage state is invalid");
   }
@@ -358,16 +421,25 @@ export function readStorageState(credentials) {
   const raw = providerData?.storageState ?? credentials.apiKey;
   if (typeof raw === "string") {
     const trimmed = raw.trim();
-    // Full Playwright storage-state JSON
-    if (trimmed.startsWith("{")) {
+    // Full Playwright storage-state JSON, J2TEAM Cookies JSON ({ url, cookies }), Cookie-Editor JSON ([...]), HAR, or key-value JSON
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
       try {
-        return normalizeChatGptWebStorageState(JSON.parse(trimmed));
+        const parsed = JSON.parse(trimmed);
+        if (!Array.isArray(parsed) && !Array.isArray(parsed?.cookies)) {
+          const extracted = extractJsonCookieList(parsed);
+          if (extracted) return normalizeChatGptWebStorageState({ cookies: extracted, origins: [] });
+        }
+        return normalizeChatGptWebStorageState(parsed);
       } catch {
         throw new Error("ChatGPT Web browser storage state JSON is invalid");
       }
     }
-    // Cookie header ("__Secure-next-auth.session-token=…; …") or a bare
-    // session-token value — the single cookie input of the dashboard.
+    // Netscape HTTP Cookie File (Get cookies.txt LOCALLY, Cookie-Editor Netscape, curl)
+    const netscapeCookies = parseNetscapeCookieEntries(trimmed);
+    if (netscapeCookies) {
+      return normalizeChatGptWebStorageState({ cookies: netscapeCookies, origins: [] });
+    }
+    // Cookie header or bare session-token value
     return chatGptWebStorageStateFromCookieHeader(trimmed);
   }
   return normalizeChatGptWebStorageState(raw);

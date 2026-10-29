@@ -33,6 +33,12 @@ export default {
     { id: "gpt-5-5-instant", name: "GPT-5.5 — Instant" },
     { id: "gpt-5-5-thinking", name: "GPT-5.5 — Thinking", supportsReasoning: true },
     { id: "gpt-5-5-pro", name: "GPT-5.5 — Pro", supportsReasoning: true },
-    { id: "gpt-image-2", name: "GPT Image 2 (web)", params: ["n", "size"], kind: "image" },
+    {
+      id: "gpt-image-2",
+      name: "GPT Image 2 (web)",
+      params: ["n", "size"],
+      kind: "image",
+      capabilities: ["text2img", "edit", "multiImage"],
+    },
   ],
 };

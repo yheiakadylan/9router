@@ -3,8 +3,149 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getStatusVariant as getConnectionStatusVariant } from "@/shared/utils/connectionStatus";
 import PropTypes from "prop-types";
-import { Card, Badge, Button, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { Card, Badge, Button, Input, Modal, Select, Toggle, EditConnectionModal, ConfirmModal } from "@/shared/components";
+import { AI_PROVIDERS } from "@/shared/constants/providers";
 import WebLoginButton from "./WebLoginButton";
+
+// ── Universal Cookie Preview Parser ────────────────────────────
+// Supports:
+// 1. Get cookies.txt LOCALLY / Netscape HTTP Cookie File (.txt)
+// 2. J2TEAM Cookies (.json / text: { url, cookies: [...] })
+// 3. Cookie-Editor / EditThisCookie / StorageAce ([ { name, value, ... } ])
+// 4. Playwright / Puppeteer storageState ({ cookies: [...], origins: [...] })
+// 5. HAR (.har) & Key-Value JSON ({ "name": "value" })
+// 6. cURL / HTTP Header / Raw Cookie string
+function parseNetscapePreviewEntries(trimmed) {
+  if (!trimmed || trimmed.startsWith("{") || trimmed.startsWith("[")) return null;
+  const hasNetscapeHeader = /^#\s*(?:Netscape\s+)?HTTP\s+Cookie\s+File/im.test(trimmed);
+  if (!trimmed.includes("\t") && !hasNetscapeHeader) return null;
+
+  const entries = [];
+  for (const rawLine of trimmed.split(/\r?\n/)) {
+    let line = rawLine.trim();
+    if (!line) continue;
+    if (line.startsWith("#HttpOnly_")) {
+      line = line.slice("#HttpOnly_".length);
+    } else if (line.startsWith("#")) {
+      continue;
+    }
+    const cols = line.split("\t");
+    if (cols.length >= 6) {
+      const expires = Number(cols[4].trim());
+      const name = cols[5].trim();
+      const value = cols.slice(6).join("\t").trim();
+      if (name) {
+        entries.push({
+          name,
+          value,
+          domain: cols[0].trim(),
+          expirationDate: Number.isFinite(expires) && expires > 0 ? expires : undefined,
+        });
+      }
+    } else {
+      const m = line.match(/^(\.?[A-Za-z0-9.-]+)\s+(TRUE|FALSE)\s+(\/\S*)\s+(TRUE|FALSE)\s+(-?\d+)\s+(\S+)\s*(.*)$/i);
+      if (m) {
+        const expires = Number(m[5].trim());
+        entries.push({
+          name: m[6].trim(),
+          value: (m[7] || "").trim(),
+          domain: m[1].trim(),
+          expirationDate: Number.isFinite(expires) && expires > 0 ? expires : undefined,
+        });
+      }
+    }
+  }
+  return entries.length > 0 ? entries : null;
+}
+
+function summarizeCookieList(cookies, formatLabel) {
+  const byName = new Map();
+  for (const c of cookies) {
+    if (c && typeof c.name === "string") byName.set(c.name, c);
+  }
+  const sessionCookie =
+    byName.get("__Secure-next-auth.session-token") ||
+    byName.get("__Secure-next-auth.session-token.0") ||
+    byName.get("sso") ||
+    byName.get("__Secure-1PSID") ||
+    byName.get("hatch_sess") ||
+    byName.get("__client");
+  const sessionChunks = cookies.filter((c) => /^__Secure-next-auth\.session-token(?:\.\d+)?$/.test(c?.name || "")).length;
+  const hasCfClearance = byName.has("cf_clearance");
+  const gn = byName.get("oai-gn")?.value || "";
+  const account = byName.get("_account")?.value || "";
+  const puidRaw = byName.get("_puid")?.value || "";
+  const userId = puidRaw ? puidRaw.split(":")[0] : "";
+  const expRaw = sessionCookie?.expirationDate || sessionCookie?.expires;
+  const expiresDate = typeof expRaw === "number" && expRaw > 0 ? new Date(expRaw * 1000) : null;
+  return {
+    format: formatLabel,
+    cookieCount: cookies.length,
+    hasSession: !!sessionCookie,
+    sessionChunks,
+    hasCfClearance,
+    userName: gn,
+    accountType: account,
+    userId,
+    expiresAt: expiresDate && !Number.isNaN(expiresDate.getTime()) ? expiresDate.toLocaleDateString("vi-VN") : null,
+  };
+}
+
+function parseCookiePreview(raw) {
+  const trimmed = (raw || "").trim();
+  if (!trimmed) return null;
+
+  // 1. JSON formats (J2TEAM, Cookie-Editor, EditThisCookie, StorageState, HAR, Key-Value)
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      let cookies = null;
+      let formatLabel = "Cookie JSON";
+      if (Array.isArray(parsed)) {
+        cookies = parsed;
+        formatLabel = "Cookie-Editor / EditThisCookie JSON";
+      } else if (Array.isArray(parsed?.cookies)) {
+        cookies = parsed.cookies;
+        formatLabel = parsed.url ? "J2TEAM Cookies JSON" : "Playwright StorageState JSON";
+      } else if (Array.isArray(parsed?.data)) {
+        cookies = parsed.data;
+      } else if (Array.isArray(parsed?.items)) {
+        cookies = parsed.items;
+      } else if (Array.isArray(parsed?.log?.entries)) {
+        cookies = [];
+        for (const entry of parsed.log.entries) {
+          if (Array.isArray(entry?.request?.cookies)) cookies.push(...entry.request.cookies);
+        }
+        formatLabel = "HAR Cookies";
+      } else if (parsed && typeof parsed === "object") {
+        const keys = Object.keys(parsed);
+        if (keys.length > 0 && keys.every((k) => typeof parsed[k] === "string")) {
+          cookies = keys.map((k) => ({ name: k, value: parsed[k] }));
+          formatLabel = "Key-Value Cookie JSON";
+        }
+      }
+      if (!cookies) return { validJson: false, error: "JSON không chứa danh sách cookies hợp lệ" };
+      return summarizeCookieList(cookies, formatLabel);
+    } catch {
+      return { validJson: false, error: "Định dạng JSON không hợp lệ" };
+    }
+  }
+
+  // 2. Netscape HTTP Cookie File (Get cookies.txt LOCALLY, Cookie-Editor Netscape, curl)
+  const netscapeCookies = parseNetscapePreviewEntries(trimmed);
+  if (netscapeCookies) {
+    return summarizeCookieList(netscapeCookies, "Get cookies.txt (Netscape)");
+  }
+
+  // 3. cURL / Raw HTTP Cookie Header / Bare Session Token
+  const hasSession = /__Secure-next-auth\.session-token|sso=|__Secure-1PSID=|hatch_sess=|__client=|^eyJ[A-Za-z0-9_-]+/.test(trimmed);
+  const isCurl = /^curl\s+/i.test(trimmed);
+  return {
+    format: isCurl ? "cURL Command" : trimmed.includes("=") ? "Cookie Header" : "Session Token",
+    cookieCount: trimmed.includes(";") ? trimmed.split(";").filter(Boolean).length : 1,
+    hasSession,
+  };
+}
 
 // ── CooldownTimer ──────────────────────────────────────────────
 function CooldownTimer({ until }) {
@@ -90,9 +231,13 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
 
   const getStatusVariant = () => getConnectionStatusVariant(connection.isActive, effectiveStatus);
 
-  const displayName = isOAuth
-    ? connection.name || connection.email || connection.displayName || "OAuth Account"
-    : connection.name;
+  const displayName = connection.email || connection.name || connection.displayName || (isOAuth ? "OAuth Account" : "Connection");
+  const subLabel = connection.email && connection.name && connection.name !== connection.email
+    ? connection.name
+    : connection.providerSpecificData?.accountName && connection.providerSpecificData.accountName !== displayName
+      ? connection.providerSpecificData.accountName
+      : null;
+  const planType = connection.providerSpecificData?.planType || null;
 
   const handleSelectProxy = async (poolId) => {
     setUpdatingProxy(true);
@@ -101,7 +246,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
   };
 
   return (
-    <div className={`group flex flex-col gap-3 p-2 rounded-lg sm:flex-row sm:items-center sm:justify-between hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors ${connection.isActive === false ? "opacity-60" : ""}`}>
+    <div className={`group flex flex-col gap-3 p-2 rounded-lg sm:flex-row sm:items-center sm:justify-between hover:bg-black/2 dark:hover:bg-white/2 transition-colors ${connection.isActive === false ? "opacity-60" : ""}`}>
       <div className="flex w-full min-w-0 flex-1 items-start gap-3 sm:items-center">
         <div className="flex flex-col">
           <button onClick={onMoveUp} disabled={isFirst} className={`p-0.5 rounded ${isFirst ? "text-text-muted/30 cursor-not-allowed" : "hover:bg-sidebar text-text-muted hover:text-primary"}`}>
@@ -113,7 +258,11 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
         </div>
         <span className="material-symbols-outlined text-base text-text-muted">{isOAuth ? "lock" : "key"}</span>
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium truncate">{displayName}</p>
+          <div className="flex items-center gap-2 min-w-0">
+            <p className="text-sm font-medium truncate">{displayName}</p>
+            {subLabel && <span className="text-xs text-text-muted truncate">({subLabel})</span>}
+            {planType && <Badge variant="primary" size="sm">{String(planType).toUpperCase()}</Badge>}
+          </div>
           <div className="flex flex-wrap items-center gap-2 mt-1">
             <Badge variant={getStatusVariant()} size="sm" dot>
               {connection.isActive === false ? "disabled" : (effectiveStatus || "Unknown")}
@@ -121,13 +270,13 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
             {hasAnyProxy && <Badge variant={proxyBadgeVariant} size="sm">Proxy</Badge>}
             {isCooldown && connection.isActive !== false && <CooldownTimer until={modelLockUntil} />}
             {connection.lastError && connection.isActive !== false && (
-              <span className="text-xs text-red-500 truncate max-w-[300px]" title={connection.lastError}>{connection.lastError}</span>
+              <span className="text-xs text-red-500 truncate max-w-75" title={connection.lastError}>{connection.lastError}</span>
             )}
             <span className="text-xs text-text-muted">#{connection.priority}</span>
           </div>
           {hasAnyProxy && (
             <div className="mt-1 flex flex-wrap items-center gap-2">
-              <span className="text-[11px] text-text-muted truncate max-w-[420px]" title={proxyDisplayText}>{proxyDisplayText}</span>
+              <span className="text-[11px] text-text-muted truncate max-w-105" title={proxyDisplayText}>{proxyDisplayText}</span>
               {maskedProxyUrl && <code className="text-[10px] font-mono bg-black/5 dark:bg-white/5 px-1 py-0.5 rounded text-text-muted">{maskedProxyUrl}</code>}
               {noProxyText && <span className="text-[11px] text-text-muted truncate max-w-[320px]" title={noProxyText}>no_proxy: {noProxyText}</span>}
             </div>
@@ -147,7 +296,7 @@ function ConnectionRow({ connection, proxyPools, isOAuth, isFirst, isLast, onMov
                 <span className="text-[10px] leading-tight">Proxy</span>
               </button>
               {showProxyDropdown && (
-                <div className="absolute right-0 top-full mt-1 z-50 bg-bg border border-border rounded-lg shadow-lg py-1 min-w-[160px]">
+                <div className="absolute right-0 top-full mt-1 z-50 bg-bg border border-border rounded-lg shadow-lg py-1 min-w-40">
                   <button onClick={() => handleSelectProxy("__none__")} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${!boundProxyPoolId ? "text-primary font-medium" : "text-text-main"}`}>None</button>
                   {(proxyPools || []).map((pool) => (
                     <button key={pool.id} onClick={() => handleSelectProxy(pool.id)} className={`w-full text-left px-3 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5 ${boundProxyPoolId === pool.id ? "text-primary font-medium" : "text-text-main"}`}>{pool.name}</button>
@@ -181,6 +330,7 @@ ConnectionRow.propTypes = {
     isActive: PropTypes.bool,
     lastError: PropTypes.string,
     priority: PropTypes.number,
+    providerSpecificData: PropTypes.object,
   }).isRequired,
   proxyPools: PropTypes.array,
   isOAuth: PropTypes.bool.isRequired,
@@ -197,45 +347,164 @@ ConnectionRow.propTypes = {
 // ── AddApiKeyModal ─────────────────────────────────────────────
 function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, onClose }) {
   const NONE = "__none__";
+  const providerInfo = provider ? AI_PROVIDERS[provider] : null;
+  const isCookie = providerInfo?.authType === "cookie";
+  const displayProviderName = providerName || providerInfo?.name || provider;
   const [formData, setFormData] = useState({ name: "", apiKey: "", priority: 1, proxyPoolId: NONE });
+  const [cookieSourceLabel, setCookieSourceLabel] = useState("");
+  const [clipboardError, setClipboardError] = useState("");
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
+  const [identityInfo, setIdentityInfo] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const modalFileInputRef = useRef(null);
 
-  const handleValidate = async () => {
+  useEffect(() => {
+    if (!isOpen) {
+      setFormData({ name: "", apiKey: "", priority: 1, proxyPoolId: NONE });
+      setCookieSourceLabel("");
+      setClipboardError("");
+      setIsDraggingFile(false);
+      setValidationResult(null);
+      setIdentityInfo(null);
+      setShowAdvanced(false);
+    }
+  }, [isOpen]);
+
+  // Support Ctrl+V anywhere while Cookie modal is open (excluding name/priority input)
+  useEffect(() => {
+    if (!isOpen || !isCookie) return;
+    const onWindowPaste = (e) => {
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const text = e.clipboardData?.getData("text/plain")?.trim();
+      if (text) {
+        e.preventDefault();
+        setClipboardError("");
+        setCookieSourceLabel("Clipboard");
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      }
+    };
+    window.addEventListener("paste", onWindowPaste);
+    return () => window.removeEventListener("paste", onWindowPaste);
+  }, [isOpen, isCookie]);
+
+  const preview = isCookie ? parseCookiePreview(formData.apiKey) : null;
+
+  const runValidation = useCallback(async (rawKey) => {
+    if (!provider || !rawKey?.trim()) return null;
     setValidating(true);
     try {
       const res = await fetch("/api/providers/validate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, apiKey: formData.apiKey }),
+        body: JSON.stringify({ provider, apiKey: rawKey.trim() }),
       });
       const data = await res.json();
       setValidationResult(data.valid ? "success" : "failed");
-    } catch { setValidationResult("failed"); }
-    finally { setValidating(false); }
+      if (data.valid) {
+        setIdentityInfo({
+          email: data.email || null,
+          name: data.name || null,
+          planType: data.planType || null,
+          accountStructure: data.accountStructure || null,
+          expires: data.expires || null,
+        });
+      } else {
+        setIdentityInfo(data.error ? { error: data.error } : null);
+      }
+      return data;
+    } catch {
+      setValidationResult("failed");
+      return null;
+    } finally {
+      setValidating(false);
+    }
+  }, [provider]);
+
+  useEffect(() => {
+    if (!isCookie || !formData.apiKey.trim()) {
+      setValidationResult(null);
+      setIdentityInfo(null);
+      return;
+    }
+    const p = parseCookiePreview(formData.apiKey);
+    if (!p?.hasSession) return;
+    const t = setTimeout(() => {
+      runValidation(formData.apiKey);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [isCookie, formData.apiKey, runValidation]);
+
+  const handlePasteClipboard = async () => {
+    setClipboardError("");
+    try {
+      const text = (await navigator.clipboard.readText())?.trim();
+      if (text) {
+        setCookieSourceLabel("Clipboard");
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      } else {
+        setClipboardError("Clipboard đang trống. Hãy copy cookie trước hoặc nhấn Ctrl+V.");
+      }
+    } catch {
+      setClipboardError("Trình duyệt chặn đọc Clipboard tự động — hãy nhấn tổ hợp phím Ctrl+V ngay tại cửa sổ này.");
+    }
+  };
+
+  const handleReadCookieFile = async (file) => {
+    if (!file) return;
+    setClipboardError("");
+    try {
+      const text = (await file.text())?.trim();
+      if (text) {
+        setCookieSourceLabel(file.name);
+        setFormData((prev) => ({ ...prev, apiKey: text }));
+      } else {
+        setClipboardError(`File "${file.name}" đang trống.`);
+      }
+    } catch {
+      setClipboardError("Không thể đọc file đã chọn.");
+    }
+  };
+
+  const handleFileDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDraggingFile(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) await handleReadCookieFile(file);
+  };
+
+  const handleClearCookie = () => {
+    setFormData((prev) => ({ ...prev, apiKey: "" }));
+    setCookieSourceLabel("");
+    setClipboardError("");
+    setValidationResult(null);
+    setIdentityInfo(null);
   };
 
   const handleSubmit = async () => {
-    if (!provider || !formData.apiKey) return;
+    if (!provider || !formData.apiKey.trim()) return;
     setSaving(true);
     try {
-      let isValid = false;
-      try {
-        setValidating(true); setValidationResult(null);
-        const res = await fetch("/api/providers/validate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider, apiKey: formData.apiKey }),
-        });
-        const data = await res.json();
-        isValid = !!data.valid;
-        setValidationResult(isValid ? "success" : "failed");
-      } catch { setValidationResult("failed"); }
-      finally { setValidating(false); }
+      let data = identityInfo && validationResult === "success" ? { valid: true, ...identityInfo } : null;
+      if (!data) {
+        data = await runValidation(formData.apiKey);
+      }
+      const isValid = !!data?.valid;
+      const autoName =
+        formData.name.trim() ||
+        data?.email ||
+        (preview?.userName ? `${preview.userName}${preview.accountType ? ` (${preview.accountType})` : ""}` : "") ||
+        (isCookie ? `${displayProviderName} Cookie` : "Default");
+
       await onSave({
-        name: formData.name,
-        apiKey: formData.apiKey,
+        name: autoName,
+        email: data?.email || undefined,
+        apiKey: formData.apiKey.trim(),
+        authType: isCookie ? "cookie" : undefined,
         priority: formData.priority,
         proxyPoolId: formData.proxyPoolId === NONE ? null : formData.proxyPoolId,
         testStatus: isValid ? "active" : "unknown",
@@ -245,38 +514,218 @@ function AddApiKeyModal({ isOpen, provider, providerName, proxyPools, onSave, on
 
   if (!provider) return null;
 
+  const autoSuggestedName =
+    identityInfo?.email ||
+    (preview?.userName ? `${preview.userName}${preview.accountType ? ` (${preview.accountType})` : ""}` : `${displayProviderName} Account`);
+
   return (
-    <Modal isOpen={isOpen} title={`Add ${providerName || provider} API Key`} onClose={onClose}>
+    <Modal isOpen={isOpen} title={isCookie ? `Add ${displayProviderName} Connection` : `Add ${displayProviderName} API Key`} onClose={onClose}>
       <div className="flex flex-col gap-4">
-        <div>
-          <label className="text-xs text-text-muted mb-1 block">Name</label>
-          <input className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} placeholder="Production Key" />
-        </div>
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <label className="text-xs text-text-muted mb-1 block">API Key</label>
-            <input type="password" className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.apiKey} onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })} />
-          </div>
-          <div className="pt-6">
-            <Button onClick={handleValidate} disabled={!formData.apiKey || validating || saving} variant="secondary">
-              {validating ? "Checking..." : "Check"}
-            </Button>
-          </div>
-        </div>
-        {validationResult && (
-          <Badge variant={validationResult === "success" ? "success" : "error"}>
-            {validationResult === "success" ? "Valid" : "Invalid"}
-          </Badge>
+        {isCookie ? (
+          <>
+            <input
+              ref={modalFileInputRef}
+              type="file"
+              accept=".txt,.json,.cookies,.har,text/plain,application/json"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleReadCookieFile(f);
+                e.target.value = "";
+              }}
+            />
+
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDraggingFile(true); }}
+              onDragLeave={() => setIsDraggingFile(false)}
+              onDrop={handleFileDrop}
+              className={`rounded-xl border border-dashed p-3.5 transition-colors ${isDraggingFile ? "border-primary bg-primary/5" : "border-border bg-black/2 dark:bg-white/2"}`}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => modalFileInputRef.current?.click()}
+                  className="flex flex-col items-center justify-center gap-1 p-3 rounded-lg border border-border bg-background hover:border-primary hover:bg-primary/5 transition-colors text-center"
+                >
+                  <span className="material-symbols-outlined text-2xl text-primary leading-none">upload_file</span>
+                  <span className="text-xs font-semibold text-text-main mt-0.5">Chọn File (.txt / .json)</span>
+                  <span className="text-[11px] text-text-muted">Hoặc kéo thả file vào đây</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handlePasteClipboard}
+                  className="flex flex-col items-center justify-center gap-1 p-3 rounded-lg border border-border bg-background hover:border-primary hover:bg-primary/5 transition-colors text-center"
+                >
+                  <span className="material-symbols-outlined text-2xl text-primary leading-none">content_paste</span>
+                  <span className="text-xs font-semibold text-text-main mt-0.5">Dán từ Clipboard</span>
+                  <span className="text-[11px] text-text-muted">Bấm vào đây hoặc nhấn Ctrl+V</span>
+                </button>
+              </div>
+
+              <p className="mt-2.5 text-center text-[11px] text-text-muted">
+                Hỗ trợ: Get cookies.txt LOCALLY (.txt) • J2TEAM Cookies (.json) • Cookie-Editor • EditThisCookie
+              </p>
+            </div>
+
+            {clipboardError && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-600 dark:text-amber-400">
+                {clipboardError}
+              </div>
+            )}
+
+            {formData.apiKey && preview && (
+              <div className={`rounded-xl border p-3 text-xs flex flex-col gap-2 ${preview.hasSession ? "border-emerald-500/30 bg-emerald-500/5" : "border-amber-500/30 bg-amber-500/5"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 font-medium min-w-0">
+                    <span className={`material-symbols-outlined text-[16px] shrink-0 ${preview.hasSession ? "text-emerald-500" : "text-amber-500"}`}>
+                      {preview.hasSession ? "check_circle" : "warning"}
+                    </span>
+                    <span className="truncate">{preview.format || "Cookie"}</span>
+                    {preview.cookieCount > 0 && (
+                      <span className="text-text-muted font-normal shrink-0">({preview.cookieCount})</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {validating ? (
+                      <span className="text-text-muted flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[14px] animate-spin">progress_activity</span>
+                        Đang kiểm tra...
+                      </span>
+                    ) : validationResult === "success" ? (
+                      <Badge variant="success" size="sm">Session Hợp lệ</Badge>
+                    ) : validationResult === "failed" ? (
+                      <Badge variant="error" size="sm">{identityInfo?.error || "Session Lỗi"}</Badge>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleClearCookie}
+                      className="text-xs text-text-muted hover:text-red-500 px-1.5 py-0.5 rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+                    >
+                      Xóa
+                    </button>
+                  </div>
+                </div>
+
+                {(identityInfo?.email || preview.userName || preview.expiresAt) && (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-text-main pt-1.5 border-t border-black/5 dark:border-white/5">
+                    {identityInfo?.email && (
+                      <span><strong className="text-text-muted font-normal">Email:</strong> {identityInfo.email}</span>
+                    )}
+                    {(identityInfo?.name || preview.userName) && (
+                      <span><strong className="text-text-muted font-normal">Tên:</strong> {identityInfo?.name || preview.userName}</span>
+                    )}
+                    {(identityInfo?.planType || preview.accountType) && (
+                      <span>
+                        <strong className="text-text-muted font-normal">Gói:</strong>{" "}
+                        <span className="uppercase font-semibold text-primary">{identityInfo?.planType || preview.accountType}</span>
+                      </span>
+                    )}
+                    {preview.expiresAt && (
+                      <span><strong className="text-text-muted font-normal">Hết hạn:</strong> {preview.expiresAt}</span>
+                    )}
+                  </div>
+                )}
+
+                {preview.error && (
+                  <p className="text-red-500">{preview.error}</p>
+                )}
+
+                {!preview.error && !preview.hasSession && (
+                  <p className="text-amber-600 dark:text-amber-400">
+                    Không tìm thấy cookie phiên đăng nhập (<code>__Secure-next-auth.session-token</code>). Hãy chắc chắn bạn đã đăng nhập trên web trước khi xuất cookie.
+                  </p>
+                )}
+              </div>
+            )}
+
+            <Input
+              label="Tên gợi nhớ (tùy chọn)"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder={autoSuggestedName}
+              hint="Bỏ trống sẽ tự động đặt theo email hoặc tên tài khoản"
+            />
+
+            <div className="border-t border-border/60 pt-2.5">
+              <button
+                type="button"
+                onClick={() => setShowAdvanced((v) => !v)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-text-muted hover:text-text-main transition-colors"
+              >
+                <span className="material-symbols-outlined text-[16px] leading-none">
+                  {showAdvanced ? "keyboard_arrow_up" : "keyboard_arrow_down"}
+                </span>
+                <span>Tùy chọn nâng cao (Priority & Proxy)</span>
+              </button>
+
+              {showAdvanced && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
+                  <Input
+                    label="Priority"
+                    type="number"
+                    min={1}
+                    value={formData.priority}
+                    onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value) || 1 })}
+                  />
+                  <Select
+                    label="Proxy Pool"
+                    value={formData.proxyPoolId}
+                    onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
+                    options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]}
+                  />
+                </div>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <Input
+              label="Name"
+              value={formData.name}
+              onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+              placeholder="Production Key"
+            />
+            <div className="flex gap-2">
+              <Input
+                label="API Key"
+                type="password"
+                value={formData.apiKey}
+                onChange={(e) => setFormData({ ...formData, apiKey: e.target.value })}
+                className="flex-1"
+              />
+              <div className="pt-6">
+                <Button onClick={() => runValidation(formData.apiKey)} disabled={!formData.apiKey || validating || saving} variant="secondary">
+                  {validating ? "Checking..." : "Check"}
+                </Button>
+              </div>
+            </div>
+            {validationResult && (
+              <Badge variant={validationResult === "success" ? "success" : "error"}>
+                {validationResult === "success" ? "Valid" : "Invalid"}
+              </Badge>
+            )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input
+                label="Priority"
+                type="number"
+                min={1}
+                value={formData.priority}
+                onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value) || 1 })}
+              />
+              <Select
+                label="Proxy Pool"
+                value={formData.proxyPoolId}
+                onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
+                options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]}
+              />
+            </div>
+          </>
         )}
-        <div>
-          <label className="text-xs text-text-muted mb-1 block">Priority</label>
-          <input type="number" className="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary" value={formData.priority} onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value) || 1 })} />
-        </div>
-        <Select label="Proxy Pool" value={formData.proxyPoolId} onChange={(e) => setFormData({ ...formData, proxyPoolId: e.target.value })}
-          options={[{ value: NONE, label: "None" }, ...(proxyPools || []).map((p) => ({ value: p.id, label: p.name }))]} />
-        <div className="flex gap-2">
-          <Button onClick={handleSubmit} fullWidth disabled={!formData.name || !formData.apiKey || saving}>
-            {saving ? "Saving..." : "Save"}
+
+        <div className="flex gap-2 pt-1">
+          <Button onClick={handleSubmit} fullWidth disabled={(!isCookie && !formData.name) || !formData.apiKey.trim() || saving || validating}>
+            {saving ? "Đang lưu..." : isCookie ? "Lưu Connection" : "Save"}
           </Button>
           <Button onClick={onClose} variant="ghost" fullWidth>Cancel</Button>
         </div>
@@ -432,15 +881,15 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-text-muted">No connections yet</p>
             <div className="flex flex-wrap gap-2">
+              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add Connection</Button>
               {loginProviderId && (
                 <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
               )}
-              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add Connection</Button>
             </div>
           </div>
         ) : (
           <>
-            <div className="flex flex-col divide-y divide-black/[0.03] dark:divide-white/[0.03] max-h-[500px] overflow-y-auto pr-1">
+            <div className="flex flex-col divide-y divide-black/3 dark:divide-white/3 max-h-125 overflow-y-auto pr-1">
               {connections.map((conn, idx) => (
                 <ConnectionRow
                   key={conn.id}
@@ -458,8 +907,8 @@ export default function ConnectionsCard({ providerId, isOAuth, loginProviderId =
                 />
               ))}
             </div>
-            <div className="mt-4 flex justify-stretch gap-2 sm:justify-start">
-              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add</Button>
+            <div className="mt-4 flex flex-wrap justify-stretch gap-2 sm:justify-start">
+              <Button size="sm" icon="add" onClick={() => setShowAddModal(true)}>Add Connection</Button>
               {loginProviderId && (
                 <WebLoginButton providerId={loginProviderId} onConnected={fetch_} />
               )}

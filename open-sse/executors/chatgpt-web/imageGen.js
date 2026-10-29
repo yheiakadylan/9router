@@ -323,7 +323,14 @@ async function downloadGeneratedImage(page, accessToken, conversationId, { fileI
         const data = await response.json();
         const url = data.download_url || data.url || "";
         if (!url) return { status: 404 };
-        const binary = await fetchWithTimeout(url, {}, 90000);
+        const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
+        const binary = await fetchWithTimeout(
+          url,
+          sameOrigin
+            ? { credentials: "include", headers: { Authorization: `Bearer ${accessToken}` } }
+            : {},
+          90000
+        );
         if (!binary.ok) return { status: binary.status };
         const blob = await binary.blob();
         const buf = new Uint8Array(await blob.arrayBuffer());
@@ -363,7 +370,14 @@ async function downloadGeneratedImage(page, accessToken, conversationId, { fileI
         const data = await response.json();
         const url = data.download_url || data.url || "";
         if (!url) return { status: 404 };
-        const binary = await fetchWithTimeout(url, {}, 90000);
+        const sameOrigin = url.startsWith("/") || url.startsWith(location.origin);
+        const binary = await fetchWithTimeout(
+          url,
+          sameOrigin
+            ? { credentials: "include", headers: { Authorization: `Bearer ${accessToken}` } }
+            : {},
+          90000
+        );
         if (!binary.ok) return { status: binary.status };
         const blob = await binary.blob();
         const buf = new Uint8Array(await blob.arrayBuffer());

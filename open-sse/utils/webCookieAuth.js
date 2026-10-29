@@ -1,30 +1,134 @@
 // Cookie-input normalization for web-cookie providers.
-// Accepts whatever the user pasted (bare value, `name=value`, full DevTools
-// blob, or a cookie-editor JSON array) and produces a `Cookie` header string.
+// Accepts whatever the user pasted or uploaded:
+// - J2TEAM Cookies JSON: {"url":"...","cookies":[...]}
+// - Cookie-Editor / EditThisCookie / StorageAce JSON array: [{"name":"...","value":"..."}]
+// - Playwright / Puppeteer storageState JSON: {"cookies":[...],"origins":[...]}
+// - Netscape HTTP Cookie File (cookies.txt from "Get cookies.txt LOCALLY", Cookie-Editor, curl)
+// - Key-Value JSON object: {"__Secure-next-auth.session-token":"..."}
+// - HAR JSON file (.har)
+// - cURL / raw HTTP headers / DevTools Cookie header / bare session token
 
 export function stripCookieInputPrefix(rawValue) {
   const trimmed = (rawValue || "").trim();
   if (!trimmed) return "";
+
+  // Extract from cURL command if user pasted "Copy as cURL"
+  if (/^curl\s+/i.test(trimmed)) {
+    const curlCookieMatch =
+      trimmed.match(/(?:-H|--header)\s+['"]cookie:\s*([^'"]+)['"]/i) ||
+      trimmed.match(/(?:-b|--cookie)\s+['"]([^'"]+)['"]/i);
+    if (curlCookieMatch?.[1]) return curlCookieMatch[1].trim();
+  }
+
+  // Extract Cookie line from multi-line raw HTTP headers
+  if (trimmed.includes("\n") && !trimmed.startsWith("{") && !trimmed.startsWith("[") && !trimmed.includes("\t")) {
+    const headerLine = trimmed.match(/^cookie:\s*(.+)$/im);
+    if (headerLine?.[1]) return headerLine[1].trim();
+  }
 
   const withoutBearer = trimmed.replace(/^bearer\s+/i, "");
   return withoutBearer.replace(/^cookie:/i, "").trim();
 }
 
 /**
- * Parse a JSON array of cookie objects and produce a Cookie header string.
- *
- * Accepts the format exported by browser cookie-editor extensions / DevTools:
- * [{"name":"sso","value":"eyJ0eXAi...","domain":".example.com","path":"/"}]
- *
- * Only `name` and `value` are required. Extra fields are silently ignored —
- * they describe the cookie but are not part of the `Cookie` request header.
- *
- * Returns null if the input is not JSON (pass-through).
- * Throws on a JSON entry missing the required `name` or `value` field.
+ * Parse Netscape HTTP Cookie File format (cookies.txt) into cookie objects.
+ * Supports "#HttpOnly_" prefix used by Get cookies.txt LOCALLY and Cookie-Editor.
  */
+export function parseNetscapeCookieEntries(rawValue) {
+  const trimmed = (rawValue || "").trim();
+  if (!trimmed || trimmed.startsWith("{") || trimmed.startsWith("[")) return null;
+  const hasNetscapeHeader = /^#\s*(?:Netscape\s+)?HTTP\s+Cookie\s+File/im.test(trimmed);
+  if (!trimmed.includes("\t") && !hasNetscapeHeader) {
+    return null;
+  }
+
+  const lines = trimmed.split(/\r?\n/);
+  const entries = [];
+  for (const rawLine of lines) {
+    let line = rawLine.trim();
+    if (!line) continue;
+    let httpOnly = false;
+    if (line.startsWith("#HttpOnly_")) {
+      httpOnly = true;
+      line = line.slice("#HttpOnly_".length);
+    } else if (line.startsWith("#")) {
+      continue;
+    }
+
+    let domain = "";
+    let path = "/";
+    let secure = true;
+    let expires = -1;
+    let name = "";
+    let value = "";
+
+    const cols = line.split("\t");
+    if (cols.length >= 6) {
+      domain = cols[0].trim();
+      path = cols[2].trim() || "/";
+      secure = /^true$/i.test(cols[3].trim());
+      expires = Number(cols[4].trim());
+      name = cols[5].trim();
+      value = cols.slice(6).join("\t").trim();
+    } else {
+      const m = line.match(/^(\.?[A-Za-z0-9.-]+)\s+(TRUE|FALSE)\s+(\/\S*)\s+(TRUE|FALSE)\s+(-?\d+)\s+(\S+)\s*(.*)$/i);
+      if (!m) continue;
+      domain = m[1].trim();
+      path = m[3].trim() || "/";
+      secure = /^true$/i.test(m[4].trim());
+      expires = Number(m[5].trim());
+      name = m[6].trim();
+      value = (m[7] || "").trim();
+    }
+
+    if (!name) continue;
+    if (name.startsWith("__Secure-") || name.startsWith("__Host-")) {
+      httpOnly = true;
+      secure = true;
+    }
+    entries.push({
+      name,
+      value,
+      domain: domain || ".chatgpt.com",
+      path,
+      secure,
+      httpOnly,
+      expires: Number.isFinite(expires) && expires > 0 ? expires : -1,
+      sameSite: "Lax",
+    });
+  }
+  return entries.length > 0 ? entries : null;
+}
+
+/**
+ * Extract cookie array from any supported JSON cookie export format.
+ */
+export function extractJsonCookieList(parsed) {
+  if (Array.isArray(parsed)) return parsed;
+  if (!parsed || typeof parsed !== "object") return null;
+  if (Array.isArray(parsed.cookies)) return parsed.cookies;
+  if (Array.isArray(parsed.data)) return parsed.data;
+  if (Array.isArray(parsed.items)) return parsed.items;
+  if (Array.isArray(parsed.log?.entries)) {
+    const harCookies = [];
+    for (const entry of parsed.log.entries) {
+      if (Array.isArray(entry?.request?.cookies)) {
+        harCookies.push(...entry.request.cookies);
+      }
+    }
+    if (harCookies.length > 0) return harCookies;
+  }
+  // Key-value object where values are strings (e.g. {"__Secure-next-auth.session-token": "eyJ..."})
+  const keys = Object.keys(parsed);
+  if (keys.length > 0 && keys.every((k) => typeof parsed[k] === "string")) {
+    return keys.map((k) => ({ name: k, value: parsed[k] }));
+  }
+  return null;
+}
+
 export function parseJsonCookiesToHeader(rawValue) {
   const trimmed = (rawValue || "").trim();
-  if (!trimmed || !trimmed.startsWith("[")) return null;
+  if (!trimmed || (!trimmed.startsWith("[") && !trimmed.startsWith("{"))) return null;
 
   let parsed;
   try {
@@ -33,12 +137,13 @@ export function parseJsonCookiesToHeader(rawValue) {
     return null;
   }
 
-  if (!Array.isArray(parsed)) return null;
-  if (parsed.length === 0) return "";
+  const list = extractJsonCookieList(parsed);
+  if (!list) return null;
+  if (list.length === 0) return "";
 
   const parts = [];
-  for (let i = 0; i < parsed.length; i++) {
-    const entry = parsed[i];
+  for (let i = 0; i < list.length; i++) {
+    const entry = list[i];
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
       throw new Error(`Invalid cookie JSON at index ${i}: expected an object`);
     }
@@ -61,6 +166,11 @@ export function normalizeSessionCookieHeader(rawValue, defaultCookieName) {
   const jsonResult = parseJsonCookiesToHeader(stripped);
   if (jsonResult !== null) {
     return jsonResult;
+  }
+
+  const netscapeEntries = parseNetscapeCookieEntries(stripped);
+  if (netscapeEntries !== null) {
+    return netscapeEntries.map((c) => `${c.name}=${c.value}`).join("; ");
   }
 
   if (stripped.includes("=")) {

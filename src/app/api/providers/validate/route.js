@@ -13,6 +13,7 @@ import {
   isNousApiKeyAccepted,
 } from "open-sse/services/nous.js";
 import { normalizeProviderId } from "@/lib/providerNormalization";
+import { hasWebIdentityProbe, fetchWebIdentity } from "open-sse/services/webIdentity.js";
 
 // Probe a webSearch/webFetch provider using its searchConfig/fetchConfig.
 // Returns true if API key is accepted (status !== 401 && !== 403).
@@ -257,6 +258,21 @@ export async function POST(request) {
         return NextResponse.json({
           valid: webResult,
           error: webResult ? null : "Invalid API key",
+        });
+      }
+
+      // Web-cookie providers with dedicated session identity probes (e.g. chatgpt-web)
+      if (hasWebIdentityProbe(provider)) {
+        const identity = await fetchWebIdentity(provider, apiKey);
+        const valid = identity.ok || identity.status === "unknown";
+        return NextResponse.json({
+          valid,
+          email: identity.email || null,
+          name: identity.name || null,
+          planType: identity.planType || null,
+          accountStructure: identity.accountStructure || null,
+          expires: identity.expires || null,
+          error: valid ? null : (identity.error || "Invalid session cookie"),
         });
       }
 

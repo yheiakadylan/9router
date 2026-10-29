@@ -13,6 +13,7 @@ const MAX_CONVERSATION_BYTES = 32 * 1024 * 1024;
 const POLL_INITIAL_WAIT_MS = 8000;
 const POLL_INTERVAL_MS = 5000;
 const POLL_TIMEOUT_MS = 240000;
+const MULTI_IMAGE_SETTLE_MS = 20000;
 const CONTENT_POLICY_RE =
   /(content policy|violat(?:es|ed|ion)|can't create|cannot create|i can't generate|i cannot generate|not able to create|unable to create|safety)/i;
 
@@ -73,7 +74,7 @@ async function pageAccessToken(page) {
   });
 }
 
-/** Run the picture_v2 flow inside the page and return { conversationId, fileIds, sedimentIds }. */
+/** Run the picture_v2 flow inside the page and return { conversationId, fileIds, sedimentIds, sseComplete }. */
 async function runImageConversation(page, prompt, { sizeHint, signal }) {
   const headers = await sentinelHeaders(page);
   const accessToken = await pageAccessToken(page);
@@ -118,7 +119,6 @@ async function runImageConversation(page, prompt, { sizeHint, signal }) {
         }
       };
 
-      // 1. prepare → conduit token
       const prepareResponse = await fetchWithTimeout("/backend-api/f/conversation/prepare", {
         method: "POST",
         credentials: "include",
@@ -131,10 +131,6 @@ async function runImageConversation(page, prompt, { sizeHint, signal }) {
       const prepareJson = await prepareResponse.json();
       const conduitToken = prepareJson.conduit_token || "";
 
-      // 2. conversation SSE — run the generation. The stream can stay open for
-      // the whole generation (progress keepalives), so it is read under a hard
-      // deadline: capture the conversation id + any ids seen so far, then abort
-      // and let the conversation-document poll below finish the job.
       const sseDeadlineMs = 90000;
       const text = sizeHint ? `${prompt} (aspect ratio ${sizeHint})` : prompt;
       const sseController = new AbortController();
@@ -159,8 +155,6 @@ async function runImageConversation(page, prompt, { sizeHint, signal }) {
           await conversationResponse.body?.cancel().catch(() => {});
           throw new Error(`conversation failed with status ${status}`);
         }
-        // Early-exit read: stop as soon as the deadline fires (the abort
-        // rejects the pending read) — partial text is enough for id scraping.
         try {
           sseText = await readBody(conversationResponse, maxBytes);
         } catch (error) {
@@ -173,17 +167,17 @@ async function runImageConversation(page, prompt, { sizeHint, signal }) {
         sseController.abort();
       }
 
-      // 3. extract conversation id + any ids already visible in the stream
       const conversationId = (sseText.match(/"conversation_id"\s*:\s*"([0-9a-f-]{36})"/) || [])[1] || "";
       const fileIds = [];
       const sedimentIds = [];
       const addUnique = (list, value) => {
-        if (value && !list.includes(value)) list.push(value);
+        if (value && value !== "file_upload" && !list.includes(value)) list.push(value);
       };
       for (const match of sseText.matchAll(/file-service:\/\/([A-Za-z0-9_-]+)/g)) addUnique(fileIds, match[1]);
       for (const match of sseText.matchAll(/\bfile_00000000[a-f0-9]{24}\b/g)) addUnique(fileIds, match[0]);
       for (const match of sseText.matchAll(/sediment:\/\/([A-Za-z0-9_-]+)/g)) addUnique(sedimentIds, match[1]);
-      return { conversationId, fileIds, sedimentIds };
+      const sseComplete = /data:\s*\[DONE\]/.test(sseText);
+      return { conversationId, fileIds, sedimentIds, sseComplete };
     },
     { accessToken, headers, prompt, sizeHint, maxBytes: MAX_SSE_BYTES }
   );
@@ -194,11 +188,15 @@ async function pollConversationImages(page, accessToken, conversationId, initial
   const started = Date.now();
   const fileIds = [...initial.fileIds];
   const sedimentIds = [...initial.sedimentIds];
+  let firstImageSeenAt = fileIds.length > 0 || sedimentIds.length > 0 ? Date.now() : null;
 
   await sleep(POLL_INITIAL_WAIT_MS);
   while (true) {
     if (signal?.aborted) throw new Error("Request aborted");
     if (Date.now() - started > POLL_TIMEOUT_MS) {
+      if (fileIds.length > 0 || sedimentIds.length > 0) {
+        return { fileIds: fileIds.filter((id) => id !== "file_upload"), sedimentIds };
+      }
       throw new ChatGptWebImageError("ChatGPT image generation timed out", 504);
     }
 
@@ -231,8 +229,9 @@ async function pollConversationImages(page, accessToken, conversationId, initial
 
         const fileIds = [];
         const sedimentIds = [];
+        let stillInProgress = false;
         const addUnique = (list, value) => {
-          if (value && !list.includes(value)) list.push(value);
+          if (value && value !== "file_upload" && !list.includes(value)) list.push(value);
         };
         const hasAssetPointer = (value) => {
           if (Array.isArray(value)) return value.some(hasAssetPointer);
@@ -266,6 +265,7 @@ async function pollConversationImages(page, accessToken, conversationId, initial
           const message = (node || {}).message || {};
           const role = String(message.author?.role || "").toLowerCase();
           if (role !== "tool" && role !== "assistant") continue;
+          if (message.status === "in_progress") stillInProgress = true;
           const metadata = message.metadata || {};
           const isImageGen = metadata.async_task_type === "image_gen";
           const hasPointer = hasAssetPointer(message.content) || hasAssetPointer(metadata);
@@ -277,7 +277,7 @@ async function pollConversationImages(page, accessToken, conversationId, initial
             if (joined) errorText = joined.slice(0, 300);
           }
         }
-        return { status: 200, fileIds, sedimentIds, errorText };
+        return { status: 200, fileIds, sedimentIds, stillInProgress, errorText };
       },
       { accessToken, conversationId, maxBytes: MAX_CONVERSATION_BYTES }
     );
@@ -288,7 +288,10 @@ async function pollConversationImages(page, accessToken, conversationId, initial
       for (const id of polled.fileIds) if (!fileIds.includes(id)) fileIds.push(id);
       for (const id of polled.sedimentIds) if (!sedimentIds.includes(id)) sedimentIds.push(id);
       if (fileIds.length > 0 || sedimentIds.length > 0) {
-        return { fileIds: fileIds.filter((id) => id !== "file_upload"), sedimentIds };
+        if (!firstImageSeenAt) firstImageSeenAt = Date.now();
+        if (!polled.stillInProgress || Date.now() - firstImageSeenAt >= MULTI_IMAGE_SETTLE_MS) {
+          return { fileIds: fileIds.filter((id) => id !== "file_upload"), sedimentIds };
+        }
       }
       if (polled.errorText && CONTENT_POLICY_RE.test(polled.errorText)) {
         throw new ChatGptWebImageError(
@@ -301,9 +304,13 @@ async function pollConversationImages(page, accessToken, conversationId, initial
   }
 }
 
-/** Resolve one generated id into { b64, mime } via the file/attachment download endpoints. */
-async function downloadGeneratedImage(page, accessToken, conversationId, { fileIds, sedimentIds }) {
+/** Resolve all generated ids into Array<{ b64, mime }> via the file/attachment download endpoints. */
+async function downloadGeneratedImages(page, accessToken, conversationId, { fileIds, sedimentIds }) {
+  const downloadedIds = new Set();
+  const results = [];
+
   for (const fileId of fileIds) {
+    if (!fileId || downloadedIds.has(fileId)) continue;
     const result = await page.evaluate(
       async ({ accessToken, fileId }) => {
         const fetchWithTimeout = async (url, options, timeoutMs) => {
@@ -343,10 +350,12 @@ async function downloadGeneratedImage(page, accessToken, conversationId, { fileI
       { accessToken, fileId }
     );
     if (result.status === 200 && result.b64) {
-      return { b64: result.b64, mime: result.mime };
+      downloadedIds.add(fileId);
+      results.push({ b64: result.b64, mime: result.mime });
     }
   }
   for (const sedimentId of sedimentIds) {
+    if (!sedimentId || downloadedIds.has(sedimentId)) continue;
     const result = await page.evaluate(
       async ({ accessToken, conversationId, sedimentId }) => {
         const fetchWithTimeout = async (url, options, timeoutMs) => {
@@ -390,14 +399,16 @@ async function downloadGeneratedImage(page, accessToken, conversationId, { fileI
       { accessToken, conversationId, sedimentId }
     );
     if (result.status === 200 && result.b64) {
-      return { b64: result.b64, mime: result.mime };
+      downloadedIds.add(sedimentId);
+      results.push({ b64: result.b64, mime: result.mime });
     }
   }
+  if (results.length > 0) return results;
   throw new ChatGptWebImageError("ChatGPT image generation produced no downloadable file", 502);
 }
 
 /**
- * Generate one image inside a logged-in ChatGPT page and return base64 bytes.
+ * Generate image(s) inside a logged-in ChatGPT page and return base64 bytes.
  */
 export async function generateChatGptWebImage(page, { prompt, sizeHint, signal, log }) {
   await ensureFirstPartyBridge(page);
@@ -407,9 +418,11 @@ export async function generateChatGptWebImage(page, { prompt, sizeHint, signal, 
     throw new ChatGptWebImageError("ChatGPT image conversation produced no conversation id", 502);
   }
   const accessToken = await pageAccessToken(page);
+  const hasInitialIds = initial.fileIds.length > 0 || initial.sedimentIds.length > 0;
   const ids =
-    initial.fileIds.length > 0 || initial.sedimentIds.length > 0
+    hasInitialIds && (initial.sseComplete || !initial.conversationId)
       ? initial
       : await pollConversationImages(page, accessToken, initial.conversationId, initial, { signal, log });
-  return downloadGeneratedImage(page, accessToken, initial.conversationId, ids);
+  const all = await downloadGeneratedImages(page, accessToken, initial.conversationId, ids);
+  return { ...all[0], all };
 }

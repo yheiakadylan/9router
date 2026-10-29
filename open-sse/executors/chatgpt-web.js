@@ -184,9 +184,15 @@ export class ChatGptWebExecutor extends BaseExecutor {
         ? providerData.customUserAgent.trim()
         : DEFAULT_USER_AGENT;
 
+    const targetCount = Math.max(1, n);
     const results = [];
-    for (let i = 0; i < Math.max(1, n); i++) {
-      results.push(await this.#generateOneImage({ prompt, size, images, storageState, userAgent, signal, log, credentials }));
+    for (let i = 0; i < targetCount && results.length < targetCount; i++) {
+      const generated = await this.#generateOneImage({ prompt, size, images, storageState, userAgent, signal, log, credentials });
+      if (Array.isArray(generated?.all) && generated.all.length > 0) {
+        results.push(...generated.all);
+      } else if (generated?.b64) {
+        results.push(generated);
+      }
     }
     return results;
   }

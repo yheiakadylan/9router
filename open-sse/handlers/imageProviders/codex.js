@@ -403,7 +403,7 @@ export default {
       prompt_cache_key: randomUUID(),
       stream: true,
       store: false,
-      reasoning: toolModel ? { effort: "medium", summary: "auto" } : null,
+      reasoning: null,
     };
   },
   // Custom: codex parses SSE → either pipe to client or collect b64

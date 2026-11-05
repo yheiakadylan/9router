@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, Button, Input } from "@/shared/components";
 
 export default function LoginPage() {
@@ -18,6 +18,7 @@ export default function LoginPage() {
   const [samlLoginLabel, setSamlLoginLabel] = useState("Sign in with SAML SSO");
   const [mustChange, setMustChange] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const authCheckStarted = useRef(false);
 
   // Countdown for rate-limit
   useEffect(() => {
@@ -26,7 +27,10 @@ export default function LoginPage() {
     return () => clearInterval(id);
   }, [retryAfter]);
 
-  useEffect(() => {
+  useEffect(function checkAuthOnce() {
+    if (authCheckStarted.current) return;
+    authCheckStarted.current = true;
+
     async function checkAuth() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);

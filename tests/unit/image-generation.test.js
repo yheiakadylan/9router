@@ -509,7 +509,7 @@ describe("handleImageGenerationCore", () => {
       { type: "image_generation", output_format: "png", size: "1024x1024", action: "generate", model: "gpt-image-2.5" },
     ]);
     expect(requestBody.tool_choice).toEqual({ type: "image_generation" });
-    expect(requestBody.reasoning).toEqual({ effort: "medium", summary: "auto" });
+    expect(requestBody.reasoning).toBeNull();
 
     const responseBody = await result.response.json();
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
@@ -703,7 +703,7 @@ describe("handleImageGenerationCore", () => {
       output_compression: 80,
     }]);
     expect(requestBody.tool_choice).toEqual({ type: "image_generation" });
-    expect(requestBody.reasoning).toEqual({ effort: "medium", summary: "auto" });
+    expect(requestBody.reasoning).toBeNull();
     expect(requestBody.input[0].content.filter((item) => item.type === "input_image")).toHaveLength(2);
 
     const responseBody = await result.response.json();

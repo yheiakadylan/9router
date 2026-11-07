@@ -393,14 +393,10 @@ export default {
       imgTool.model = toolModel;
     }
     if (body.size && body.size !== "") imgTool.size = body.size;
-    if (CODEX_IMAGE_25_VARIANTS.has(toolModel) && (!body.quality || body.quality === "auto")) {
-      // Legacy 2.5 variants reject their unresolved default upstream.
-      imgTool.quality = "high";
-    } else if (body.quality && body.quality !== "") {
-      imgTool.quality = body.quality;
-    }
-    // The ChatGPT Codex backend currently rejects every explicit complexity level.
-    // Omit it so GPT Image 2.6 uses its supported upstream default.
+    if (body.quality && body.quality !== "") imgTool.quality = body.quality;
+    // Legacy 2.5 variants default to unsupported medium complexity on some accounts.
+    if (CODEX_IMAGE_25_VARIANTS.has(toolModel)) imgTool.complexity = "high";
+    // GPT Image 2.6 uses its supported upstream default when complexity is omitted.
     if (body.background && body.background !== "") imgTool.background = body.background;
     if (body.moderation) imgTool.moderation = body.moderation;
     if (Number.isFinite(Number(body.output_compression))) imgTool.output_compression = Number(body.output_compression);

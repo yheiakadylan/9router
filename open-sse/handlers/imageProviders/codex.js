@@ -395,7 +395,7 @@ export default {
     if (body.size && body.size !== "") imgTool.size = body.size;
     if (CODEX_IMAGE_25_VARIANTS.has(toolModel) && (!body.quality || body.quality === "auto")) {
       // Legacy 2.5 variants reject their unresolved default upstream.
-      imgTool.quality = "medium";
+      imgTool.quality = "high";
     } else if (body.quality && body.quality !== "") {
       imgTool.quality = body.quality;
     }

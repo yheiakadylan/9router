@@ -21,6 +21,10 @@ const CODEX_TOOL_IMAGE_MODELS = new Set([
   "gpt-image-2.6-flare",
   "gpt-image-2.6-sunburst",
 ]);
+const CODEX_IMAGE_25_VARIANTS = new Set([
+  "gpt-image-2.5-flare",
+  "gpt-image-2.5-sunburst",
+]);
 // These failures describe the request/model contract, not account health.
 function isRequestScopedError(status, message) {
   if (Number(status) !== 400) return false;
@@ -389,7 +393,12 @@ export default {
       imgTool.model = toolModel;
     }
     if (body.size && body.size !== "") imgTool.size = body.size;
-    if (body.quality && body.quality !== "") imgTool.quality = body.quality;
+    if (body.quality && body.quality !== "") {
+      // Legacy 2.5 variants reject their unresolved "auto" default upstream.
+      imgTool.quality = body.quality === "auto" && CODEX_IMAGE_25_VARIANTS.has(toolModel)
+        ? "medium"
+        : body.quality;
+    }
     // The ChatGPT Codex backend currently rejects every explicit complexity level.
     // Omit it so GPT Image 2.6 uses its supported upstream default.
     if (body.background && body.background !== "") imgTool.background = body.background;

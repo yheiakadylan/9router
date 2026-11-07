@@ -515,7 +515,7 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
   });
 
-  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("normalizes Codex %s auto quality to medium", async (model) => {
+  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("normalizes Codex %s auto quality to high", async (model) => {
     global.fetch.mockResolvedValueOnce(new Response([
       "event: response.output_item.done",
       'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
@@ -531,10 +531,10 @@ describe("handleImageGenerationCore", () => {
     });
 
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.tools[0].quality).toBe("medium");
+    expect(requestBody.tools[0].quality).toBe("high");
   });
 
-  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("defaults Codex %s quality to medium", async (model) => {
+  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("defaults Codex %s quality to high", async (model) => {
     global.fetch.mockResolvedValueOnce(new Response([
       "event: response.output_item.done",
       'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
@@ -550,7 +550,7 @@ describe("handleImageGenerationCore", () => {
     });
 
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.tools[0].quality).toBe("medium");
+    expect(requestBody.tools[0].quality).toBe("high");
   });
 
   it.each(["gpt-image-2.6-flare", "gpt-image-2.6-sunburst"])("routes Codex %s without the unsupported complexity override", async (model) => {

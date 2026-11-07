@@ -56,4 +56,13 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
     expect(result.shouldFallback).toBe(true);
     expect(result.cooldownMs).toBeGreaterThan(0);
   });
+
+  it("keeps Codex accounts that reject image complexity out of model rotation", () => {
+    expect(checkFallbackError(
+      502,
+      "Complexity 'medium' is not supported for this image model.",
+      0,
+      "codex"
+    )).toEqual({ shouldFallback: true, cooldownMs: 30 * 60 * 1000 });
+  });
 });

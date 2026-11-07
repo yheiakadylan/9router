@@ -95,9 +95,9 @@ jobs:
                   start_period: 40s
             EOF
 
-            # Configure Nginx reverse proxy client_max_body_size (fix 413 Request Entity Too Large)
+            # Configure Nginx for large payloads and buffered image generations.
             if command -v nginx >/dev/null 2>&1 && [ -d /etc/nginx ]; then
-              echo "=== Configuring Nginx client_max_body_size ==="
+              echo "=== Configuring Nginx proxy limits ==="
               for f in /etc/nginx/nginx.conf /etc/nginx/conf.d/*.conf /etc/nginx/sites-available/* /etc/nginx/sites-enabled/*; do
                 if [ -f "$f" ] && sudo grep -q "client_max_body_size" "$f" 2>/dev/null; then
                   sudo sed -i -E 's/client_max_body_size[[:space:]]+[^;]+;/client_max_body_size 128M;/g' "$f" || true
@@ -107,11 +107,14 @@ jobs:
                 sudo mkdir -p /etc/nginx/conf.d
                 printf 'client_max_body_size 128M;\n' | sudo tee /etc/nginx/conf.d/9router-body-size.conf >/dev/null
               fi
+              printf 'proxy_read_timeout 600s;\nproxy_send_timeout 600s;\nsend_timeout 600s;\n' \
+                | sudo tee /etc/nginx/conf.d/9router-timeouts.conf >/dev/null
               if sudo nginx -t 2>/dev/null; then
                 sudo systemctl reload nginx 2>/dev/null || sudo service nginx reload 2>/dev/null || true
-                echo "Nginx reloaded with client_max_body_size 128M"
+                echo "Nginx reloaded with 128M body size and 600s proxy timeouts"
               else
                 sudo rm -f /etc/nginx/conf.d/9router-body-size.conf 2>/dev/null || true
+                sudo rm -f /etc/nginx/conf.d/9router-timeouts.conf 2>/dev/null || true
               fi
             fi
 

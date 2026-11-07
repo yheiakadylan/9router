@@ -393,11 +393,11 @@ export default {
       imgTool.model = toolModel;
     }
     if (body.size && body.size !== "") imgTool.size = body.size;
-    if (body.quality && body.quality !== "") {
-      // Legacy 2.5 variants reject their unresolved "auto" default upstream.
-      imgTool.quality = body.quality === "auto" && CODEX_IMAGE_25_VARIANTS.has(toolModel)
-        ? "medium"
-        : body.quality;
+    if (CODEX_IMAGE_25_VARIANTS.has(toolModel) && (!body.quality || body.quality === "auto")) {
+      // Legacy 2.5 variants reject their unresolved default upstream.
+      imgTool.quality = "medium";
+    } else if (body.quality && body.quality !== "") {
+      imgTool.quality = body.quality;
     }
     // The ChatGPT Codex backend currently rejects every explicit complexity level.
     // Omit it so GPT Image 2.6 uses its supported upstream default.

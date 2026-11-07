@@ -534,6 +534,25 @@ describe("handleImageGenerationCore", () => {
     expect(requestBody.tools[0].quality).toBe("medium");
   });
 
+  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("defaults Codex %s quality to medium", async (model) => {
+    global.fetch.mockResolvedValueOnce(new Response([
+      "event: response.output_item.done",
+      'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
+      "",
+      "",
+    ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+
+    await handleImageGenerationCore({
+      body: { prompt: "A futuristic city" },
+      modelInfo: { provider: "codex", model },
+      credentials: { accessToken: "codex-token", providerSpecificData: { chatgptAccountId: "account-123" } },
+      log: null,
+    });
+
+    const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(requestBody.tools[0].quality).toBe("medium");
+  });
+
   it.each(["gpt-image-2.6-flare", "gpt-image-2.6-sunburst"])("routes Codex %s without the unsupported complexity override", async (model) => {
     global.fetch.mockResolvedValueOnce(new Response([
       "event: response.output_item.done",

@@ -111,6 +111,27 @@ describe("native Codex OAuth image generation", () => {
 });
 
 describe("legacy Codex image Responses compatibility", () => {
+  it("parses an SSE event split across network chunks", async () => {
+    const encoder = new TextEncoder();
+    const upstream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: response.output_item.done\n"));
+        controller.enqueue(encoder.encode('data: {"item":{"type":"image_generation_call","result":"aW1hZ2U="}}'));
+        controller.close();
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(upstream, {
+      headers: { "content-type": "text/event-stream" },
+    })));
+
+    const result = await handleImageGenerationCore(request({
+      body: { prompt: "Edit this image", image: "data:image/png;base64,cmVm" },
+    }));
+
+    expect(result.success).toBe(true);
+    expect((await result.response.json()).data).toEqual(image.data);
+  });
+
   it.each([
     { n: 2 },
     { size: "1024x1024" },

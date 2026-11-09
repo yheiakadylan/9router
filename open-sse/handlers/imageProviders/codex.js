@@ -245,29 +245,36 @@ async function parseStream(response, log, { onFirstChunk, onProgress, onPartialI
   let upstreamErrorParam = null;
   let firstChunkAt = null;
   let usage = null;
+  let eventName = "";
 
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-
-      if (!firstChunkAt) {
-        firstChunkAt = Date.now();
-        onFirstChunk?.(firstChunkAt);
+      if (done) {
+        buffer += decoder.decode();
+        if (buffer) buffer += "\n"; // Flush a final SSE line without a trailing newline.
+      } else {
+        if (!firstChunkAt) {
+          firstChunkAt = Date.now();
+          onFirstChunk?.(firstChunkAt);
+        }
+        buffer += decoder.decode(value, { stream: true });
       }
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
+      const lines = buffer.split(/\r?\n/);
       buffer = lines.pop(); // keep last incomplete line
 
-      let eventName = "";
       for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventName = line.slice(7).trim();
+        if (line === "") {
+          eventName = "";
           continue;
         }
-        if (!line.startsWith("data: ")) continue;
-        const dataStr = line.slice(6).trim();
+        if (line.startsWith("event:")) {
+          eventName = line.slice(6).trim();
+          continue;
+        }
+        if (!line.startsWith("data:")) continue;
+        const dataStr = line.slice(5).trim();
 
         if ((eventName === "error" || eventName === "response.failed") && dataStr) {
           let data;
@@ -334,6 +341,7 @@ async function parseStream(response, log, { onFirstChunk, onProgress, onPartialI
           } catch {}
         }
       }
+      if (done) break;
     }
   } catch (error) {
     try { await reader.cancel(); } catch {}

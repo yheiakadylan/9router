@@ -91,6 +91,7 @@ export default {
     // gpt-5.6-{sol,terra,luna}-image removed: superseded by gpt-6-sol-image.
   ],
   serviceKinds: ["llm","image","stt"],
+  imageConfig: { baseUrl: "https://chatgpt.com/backend-api/codex/images/generations" },
   sttConfig: {
     baseUrl: "https://chatgpt.com/backend-api/transcribe",
     authType: "oauth",

@@ -16,11 +16,9 @@ describe("Codex remote reference images", () => {
       image: "https://example.com/reference.png",
     });
 
-    expect(body.input[0].content).toContainEqual({
-      type: "input_image",
-      image_url: "data:image/png;base64,iVBORw0KGgo=",
-      detail: "high",
-    });
+    expect(body.images).toEqual([{ image_url: "data:image/png;base64,iVBORw0KGgo=" }]);
+    expect(body).not.toHaveProperty("complexity");
+    expect(body).not.toHaveProperty("reasoning");
   });
 
   it("reports an unavailable reference URL before calling upstream", async () => {

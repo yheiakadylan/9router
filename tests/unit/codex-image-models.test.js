@@ -23,25 +23,16 @@ describe("Codex GPT-6 image models", () => {
   });
 
   it.each(models)("routes %s-image edits and streams image events", async (model) => {
-    const events = [
-      ["response.image_generation_call.partial_image", { partial_image_b64: "cGFydGlhbA==", partial_image_index: 0 }],
-      ["response.output_item.done", { item: { type: "image_generation_call", result: "ZmluYWw=" } }],
-      ["response.completed", {
-        response: {
-          usage: {
-            input_tokens: 321,
-            output_tokens: 654,
-            total_tokens: 975,
-            input_tokens_details: { cached_tokens: 111 },
-            output_tokens_details: { reasoning_tokens: 22 },
-          },
-        },
-      }],
-    ];
-    const fetchMock = vi.fn().mockResolvedValue(new Response(
-      events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(""),
-      { headers: { "Content-Type": "text/event-stream" } },
-    ));
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      created: 123,
+      data: [{ b64_json: "ZmluYWw=" }],
+      usage: {
+        input_tokens: 321,
+        output_tokens: 654,
+        total_tokens: 975,
+        input_tokens_details: { cached_tokens: 111 },
+      },
+    }));
     vi.stubGlobal("fetch", fetchMock);
     const onRequestSuccess = vi.fn();
     const onUsage = vi.fn();
@@ -70,18 +61,19 @@ describe("Codex GPT-6 image models", () => {
     expect(result.response.status).toBe(200);
     expect(result.response.headers.get("content-type")).toBe("text/event-stream");
     const [url, options] = fetchMock.mock.calls[0];
-    expect(url).toBe("https://chatgpt.com/backend-api/codex/responses");
+    expect(url).toBe("https://chatgpt.com/backend-api/codex/images/edits");
     const upstreamBody = JSON.parse(options.body);
-    expect(upstreamBody.model).toBe(model);
-    expect(upstreamBody.tools).toEqual([{
-      type: "image_generation", output_format: "webp", size: "1024x1024",
-      quality: "high", background: "transparent",
-    }]);
-    expect(upstreamBody.input[0].content).toContainEqual({
-      type: "input_image", image_url: "data:image/png;base64,iVBORw0KGgo=", detail: "low",
+    expect(upstreamBody).toEqual({
+      images: [{ image_url: "data:image/png;base64,iVBORw0KGgo=" }],
+      prompt: "Make the square blue",
+      model: "gpt-image-2",
+      size: "1024x1024",
+      quality: "high",
+      background: "transparent",
     });
+    expect(upstreamBody).not.toHaveProperty("complexity");
+    expect(upstreamBody).not.toHaveProperty("reasoning");
     const stream = await result.response.text();
-    expect(stream).toContain('event: partial_image\ndata: {"b64_json":"cGFydGlhbA==","index":0}');
     expect(stream).toContain("event: done\n");
     expect(stream).toContain('"data":[{"b64_json":"ZmluYWw="}]');
     expect(onRequestSuccess).toHaveBeenCalledTimes(1);
@@ -91,7 +83,6 @@ describe("Codex GPT-6 image models", () => {
       completion_tokens: 654,
       total_tokens: 975,
       cached_tokens: 111,
-      reasoning_tokens: 22,
     });
   });
 });

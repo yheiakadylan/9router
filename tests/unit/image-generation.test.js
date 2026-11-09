@@ -436,15 +436,7 @@ describe("handleImageGenerationCore", () => {
     const uploadUrl = "https://storage.googleapis.com/test-bucket/stream.png?signature=test";
     const publicUrl = "https://storage.googleapis.com/test-bucket/stream.png?read=test";
     global.fetch
-      .mockResolvedValueOnce(new Response([
-        "event: response.image_generation_call.partial_image",
-        `data: ${JSON.stringify({ partial_image_b64: imageBytes.toString("base64"), partial_image_index: 0 })}`,
-        "",
-        "event: response.output_item.done",
-        `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBytes.toString("base64") } })}`,
-        "",
-        "",
-      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(Response.json({ data: [{ b64_json: imageBytes.toString("base64") }] }))
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     const onStreamComplete = vi.fn();
 
@@ -507,13 +499,8 @@ describe("handleImageGenerationCore", () => {
     expect(responseBody.data[0].b64_json).toBe("base64codeximage");
   });
 
-  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("normalizes Codex %s auto quality to high", async (model) => {
-    global.fetch.mockResolvedValueOnce(new Response([
-      "event: response.output_item.done",
-      'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
-      "",
-      "",
-    ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("omits Codex %s auto quality on the native endpoint", async (model) => {
+    global.fetch.mockResolvedValueOnce(Response.json({ data: [{ b64_json: "base64codeximage" }] }));
 
     await handleImageGenerationCore({
       body: { prompt: "A futuristic city", quality: "auto", size: "1024x1024" },
@@ -523,16 +510,12 @@ describe("handleImageGenerationCore", () => {
     });
 
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.tools[0].quality).toBe("high");
+    expect(global.fetch.mock.calls[0][0]).toBe("https://chatgpt.com/backend-api/codex/images/generations");
+    expect(requestBody).not.toHaveProperty("quality");
   });
 
-  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("defaults Codex %s quality to high", async (model) => {
-    global.fetch.mockResolvedValueOnce(new Response([
-      "event: response.output_item.done",
-      'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
-      "",
-      "",
-    ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+  it.each(["gpt-image-2.5-flare", "gpt-image-2.5-sunburst"])("does not invent Codex %s quality", async (model) => {
+    global.fetch.mockResolvedValueOnce(Response.json({ data: [{ b64_json: "base64codeximage" }] }));
 
     await handleImageGenerationCore({
       body: { prompt: "A futuristic city", size: "1024x1024" },
@@ -542,7 +525,7 @@ describe("handleImageGenerationCore", () => {
     });
 
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.tools[0].quality).toBe("high");
+    expect(requestBody).not.toHaveProperty("quality");
   });
 
   it("surfaces Codex image tool failures from response.failed", async () => {
@@ -563,7 +546,7 @@ describe("handleImageGenerationCore", () => {
 
     const result = await handleImageGenerationCore({
       body: { prompt: "A red apple", size: "1024x1024" },
-      modelInfo: { provider: "codex", model: "gpt-image-2.5" },
+      modelInfo: { provider: "codex", model: "gpt-5.5-image" },
       credentials: { accessToken: "codex-token", providerSpecificData: {} },
       streamToClient: true,
       log: null,
@@ -576,12 +559,7 @@ describe("handleImageGenerationCore", () => {
   });
 
   it.each(["gpt-image-2.6-flare", "gpt-image-2.6-sunburst"])("routes Codex %s without the unsupported complexity override", async (model) => {
-    global.fetch.mockResolvedValueOnce(new Response([
-      "event: response.output_item.done",
-      'data: {"item":{"type":"image_generation_call","result":"base64codeximage"}}',
-      "",
-      "",
-    ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    global.fetch.mockResolvedValueOnce(Response.json({ data: [{ b64_json: "base64codeximage" }] }));
 
     const result = await handleImageGenerationCore({
       body: {
@@ -598,15 +576,15 @@ describe("handleImageGenerationCore", () => {
 
     expect(result.success).toBe(true);
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.model).toBe("gpt-6-sol");
-    expect(requestBody.tools).toEqual([{
-      type: "image_generation",
-      output_format: "png",
-      action: "generate",
+    expect(global.fetch.mock.calls[0][0]).toBe("https://chatgpt.com/backend-api/codex/images/generations");
+    expect(requestBody).toEqual({
       model,
+      prompt: "A futuristic city",
       size: "1024x1024",
       quality: "high",
-    }]);
+    });
+    expect(requestBody).not.toHaveProperty("complexity");
+    expect(requestBody).not.toHaveProperty("reasoning");
   });
 
   it("uploads Codex output to a signed URL and returns only the stored URL", async () => {
@@ -615,17 +593,7 @@ describe("handleImageGenerationCore", () => {
     const uploadUrl = "https://storage.googleapis.com/test-bucket/result.png?signature=test";
     const publicUrl = "https://storage.googleapis.com/test-bucket/result.png?read=test";
     global.fetch
-      .mockResolvedValueOnce(
-        new Response(
-          [
-            "event: response.output_item.done",
-            `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
-            "",
-            "",
-          ].join("\n"),
-          { status: 200, headers: { "Content-Type": "text/event-stream" } }
-        )
-      )
+      .mockResolvedValueOnce(Response.json({ data: [{ b64_json: imageBase64 }] }))
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
 
     const result = await handleImageGenerationCore({
@@ -659,14 +627,7 @@ describe("handleImageGenerationCore", () => {
     const imageBase64 = Buffer.from("generated-image").toString("base64");
     const log = { info: vi.fn(), warn: vi.fn() };
     global.fetch
-      .mockResolvedValueOnce(
-        new Response([
-          "event: response.output_item.done",
-          `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
-          "",
-          "",
-        ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } })
-      )
+      .mockResolvedValueOnce(Response.json({ data: [{ b64_json: imageBase64 }] }))
       .mockResolvedValueOnce(new Response(null, { status: 403 }));
 
     const result = await handleImageGenerationCore({
@@ -698,12 +659,7 @@ describe("handleImageGenerationCore", () => {
     const imageBase64 = Buffer.from("streamed-fallback-image").toString("base64");
     const log = { info: vi.fn(), warn: vi.fn() };
     global.fetch
-      .mockResolvedValueOnce(new Response([
-        "event: response.output_item.done",
-        `data: ${JSON.stringify({ item: { type: "image_generation_call", result: imageBase64 } })}`,
-        "",
-        "",
-      ].join("\n"), { status: 200, headers: { "Content-Type": "text/event-stream" } }))
+      .mockResolvedValueOnce(Response.json({ data: [{ b64_json: imageBase64 }] }))
       .mockResolvedValueOnce(new Response(null, { status: 403 }));
 
     const result = await handleImageGenerationCore({
@@ -752,17 +708,7 @@ describe("handleImageGenerationCore", () => {
   });
 
   it("routes GPT Image 2 through the Codex image tool model", async () => {
-    global.fetch.mockResolvedValueOnce(
-      new Response(
-        [
-          "event: response.output_item.done",
-          'data: {"item":{"type":"image_generation_call","result":"base64gptimage2"}}',
-          "",
-          "",
-        ].join("\n"),
-        { status: 200, headers: { "Content-Type": "text/event-stream" } }
-      )
-    );
+    global.fetch.mockResolvedValueOnce(Response.json({ data: [{ b64_json: "base64gptimage2" }] }));
 
     const result = await handleImageGenerationCore({
       body: {
@@ -786,19 +732,19 @@ describe("handleImageGenerationCore", () => {
 
     expect(result.success).toBe(true);
     const requestBody = JSON.parse(global.fetch.mock.calls[0][1].body);
-    expect(requestBody.model).toBe("gpt-6-sol");
-    expect(requestBody.tools).toEqual([{
-      type: "image_generation",
-      action: "edit",
+    expect(global.fetch.mock.calls[0][0]).toBe("https://chatgpt.com/backend-api/codex/images/edits");
+    expect(requestBody).toEqual({
+      images: [
+        { image_url: "data:image/jpeg;base64,/9j/4AAQ" },
+        { image_url: "data:image/png;base64,iVBORw0KGgo" },
+      ],
+      prompt: "Combine the references",
       model: "gpt-image-2",
-      output_format: "png",
       size: "1024x1024",
       quality: "high",
-      output_compression: 80,
-    }]);
-    expect(requestBody.tool_choice).toEqual({ type: "image_generation" });
-    expect(requestBody.reasoning).toBeNull();
-    expect(requestBody.input[0].content.filter((item) => item.type === "input_image")).toHaveLength(2);
+    });
+    expect(requestBody).not.toHaveProperty("complexity");
+    expect(requestBody).not.toHaveProperty("reasoning");
 
     const responseBody = await result.response.json();
     expect(responseBody.data[0].b64_json).toBe("base64gptimage2");

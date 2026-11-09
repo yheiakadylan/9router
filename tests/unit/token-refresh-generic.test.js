@@ -102,6 +102,16 @@ describe("refreshAccessToken — config-driven profiles", () => {
     expect(fm).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Codex refresh failures", () => {
+  it("treats invalid_refresh_token as requiring re-authentication", async () => {
+    const { classifyOAuthRefreshError } = await import("open-sse/services/tokenRefresh/providers.js");
+    expect(classifyOAuthRefreshError(JSON.stringify({
+      error: { code: "invalid_refresh_token", message: "Could not validate your refresh token." },
+    }), 401).permanent).toBe(true);
+  });
+});
+
 describe("Cline refresh", () => {
   beforeEach(() => { vi.clearAllMocks(); vi.resetModules(); global.fetch = originalFetch; });
   afterEach(() => { global.fetch = originalFetch; });

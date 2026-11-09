@@ -47,6 +47,7 @@ const COOLDOWN = {
   long: 2 * 60 * 1000,
   short: 5 * 1000,
 };
+const MODEL_INCOMPATIBLE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Unified error classification rules.
@@ -60,7 +61,7 @@ const COOLDOWN = {
 export const ERROR_RULES = [
   // --- Text-based rules (checked first, order = priority) ---
   { provider: "codex", text: "model is not supported when using codex with a chatgpt account", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS },
-  { provider: "codex", text: "complexity 'medium' is not supported for this image model", cooldownMs: MAX_RATE_LIMIT_COOLDOWN_MS },
+  { provider: "codex", text: "complexity 'medium' is not supported for this image model", cooldownMs: MODEL_INCOMPATIBLE_COOLDOWN_MS },
   // Intl gateway blocks affect the account/IP, so let the connection back off.
   { provider: "codebuddy-intl", text: "request illegal", backoff: true },
   { provider: "codebuddy-intl", text: "conversation id missing", backoff: true },

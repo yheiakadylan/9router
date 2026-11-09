@@ -34,8 +34,9 @@ const CODEX_IMAGE_25_VARIANTS = new Set([
 
 // These failures describe the request/model contract, not account health.
 function isRequestScopedError(status, message) {
-  if (Number(status) !== 400) return false;
   const text = String(message || "");
+  if (/rejected by the safety system|safety_violations/i.test(text)) return true;
+  if (Number(status) !== 400) return false;
   return /requires a newer version of codex/i.test(text) ||
     /model[\s\S]{0,160}(?:not supported|unsupported|does not exist|not found|not available|do not have access|access denied)/i.test(text) ||
     /(?:not supported|unsupported|does not exist|not found|not available|do not have access|access denied)[\s\S]{0,160}model/i.test(text) ||

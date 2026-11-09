@@ -111,6 +111,25 @@ describe("native Codex OAuth image generation", () => {
 });
 
 describe("legacy Codex image Responses compatibility", () => {
+  it("returns safety rejections as non-retryable bad requests", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(sse("response.failed", {
+      response: {
+        error: {
+          message: "Your request was rejected by the safety system. safety_violations=[sexual].",
+        },
+      },
+    }), { headers: { "content-type": "text/event-stream" } })));
+
+    const result = await handleImageGenerationCore(request({
+      body: { prompt: "Edit this image", image: "data:image/png;base64,cmVm" },
+    }));
+
+    expect(result.success).toBe(false);
+    expect(result.status).toBe(400);
+    expect(result.retryable).toBe(false);
+    expect(await result.response.text()).toContain("rejected by the safety system");
+  });
+
   it("parses an SSE event split across network chunks", async () => {
     const encoder = new TextEncoder();
     const upstream = new ReadableStream({

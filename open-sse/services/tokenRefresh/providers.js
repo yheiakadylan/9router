@@ -248,6 +248,7 @@ export function classifyOAuthRefreshError(errorText = "", status = 0) {
     "refresh_token_expired",
     "refresh_token_reused",
     "refresh_token_invalidated",
+    "invalid_refresh_token",
     "invalid_grant",
   ].some((marker) => combined.includes(marker));
 

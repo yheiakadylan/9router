@@ -63,6 +63,6 @@ describe("checkFallbackError — request-scoped vs account-scoped failures", () 
       "Complexity 'medium' is not supported for this image model.",
       0,
       "codex"
-    )).toEqual({ shouldFallback: true, cooldownMs: 30 * 60 * 1000 });
+    )).toEqual({ shouldFallback: true, cooldownMs: 6 * 60 * 60 * 1000 });
   });
 });

@@ -198,7 +198,11 @@ export async function handleImageGenerationCore({
       parsed = await providerResponse.json();
     }
   } catch (parseError) {
-    return createErrorResult(HTTP_STATUS.BAD_GATEWAY, parseError.message || `Invalid response from ${provider}`);
+    const message = parseError.message || `Invalid response from ${provider}`;
+    const requestScoped = adapter.isRequestScopedError?.(HTTP_STATUS.BAD_GATEWAY, message);
+    const result = createErrorResult(requestScoped ? HTTP_STATUS.BAD_REQUEST : HTTP_STATUS.BAD_GATEWAY, message);
+    if (requestScoped) result.retryable = false;
+    return result;
   }
 
   if (onRequestSuccess) await onRequestSuccess();

@@ -325,11 +325,16 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         });
       },
       onRequestSuccess: async () => {
-        await clearAccountError(credentials.connectionId, credentials, model);
-        // Cookies that rotate on use (Clerk `__client`) are mutated in place by
-        // the executor — persist the new value so the chain does not drift.
-        if (refreshedCredentials.apiKey && refreshedCredentials.apiKey !== credentials.apiKey) {
-          await updateProviderCredentials(credentials.connectionId, { apiKey: refreshedCredentials.apiKey });
+        try {
+          await clearAccountError(credentials.connectionId, credentials, model);
+          // Cookies that rotate on use (Clerk `__client`) are mutated in place by
+          // the executor — persist the new value so the chain does not drift.
+          if (refreshedCredentials.apiKey && refreshedCredentials.apiKey !== credentials.apiKey) {
+            await updateProviderCredentials(credentials.connectionId, { apiKey: refreshedCredentials.apiKey });
+          }
+        } catch (error) {
+          if (!/SQLITE_BUSY|database is locked/i.test(error?.message || "")) throw error;
+          log?.warn?.("DB", `image succeeded but account cleanup was busy: ${error.message}`);
         }
       },
       onStreamComplete: ({ success, response, error, firstChunkAt, completedAt }) => {

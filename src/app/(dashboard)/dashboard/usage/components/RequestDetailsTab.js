@@ -7,6 +7,7 @@ import Drawer from "@/shared/components/Drawer";
 import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
+import { getInputTokens, getOutputTokens, getCachedTokens, getCacheCreationTokens } from "./tokenDisplay";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -80,23 +81,6 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
       )}
     </div>
   );
-}
-
-function getCachedTokens(tokens) {
-  return tokens?.cached_tokens || tokens?.cache_read_input_tokens || 0;
-}
-
-function getCacheCreationTokens(tokens) {
-  return tokens?.cache_creation_input_tokens || 0;
-}
-
-function getInputTokens(tokens) {
-  const prompt = tokens?.prompt_tokens || tokens?.input_tokens || 0;
-  // Canonical storage keeps prompt cache-inclusive. Legacy Claude rows may have
-  // stored prompt cache-exclusive; fall back to cache when it's larger so old
-  // rows don't under-report input.
-  const cache = getCachedTokens(tokens);
-  return prompt < cache ? cache : prompt;
 }
 
 export default function RequestDetailsTab() {
@@ -381,6 +365,38 @@ export default function RequestDetailsTab() {
                   {selectedDetail.latency?.total ? `${(selectedDetail.latency.total / 1000).toFixed(2)} giây` : "—"}
                 </span>
               </div>
+              {getInputTokens(selectedDetail.tokens) > 0 && (
+                <div>
+                  <span className="text-text-muted">Input Tokens:</span>{" "}
+                  <span className="text-text-main font-mono">
+                    {getInputTokens(selectedDetail.tokens).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {getCachedTokens(selectedDetail.tokens) > 0 && (
+                <div>
+                  <span className="text-text-muted">Cached Tokens:</span>{" "}
+                  <span className="text-text-main font-mono">
+                    {getCachedTokens(selectedDetail.tokens).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {getCacheCreationTokens(selectedDetail.tokens) > 0 && (
+                <div>
+                  <span className="text-text-muted">Cache Creation:</span>{" "}
+                  <span className="text-text-main font-mono">
+                    {getCacheCreationTokens(selectedDetail.tokens).toLocaleString()}
+                  </span>
+                </div>
+              )}
+              {getOutputTokens(selectedDetail.tokens) > 0 && (
+                <div>
+                  <span className="text-text-muted">Output Tokens:</span>{" "}
+                  <span className="text-text-main font-mono">
+                    {getOutputTokens(selectedDetail.tokens).toLocaleString()}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Prompt & Request Payload Details Card */}

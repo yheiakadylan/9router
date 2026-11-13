@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useMemo } from "react";
+import { applyQoderModelNames } from "@/shared/utils/providerCustomModels";
 import PropTypes from "prop-types";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, rectSortingStrategy } from "@dnd-kit/sortable";
@@ -281,8 +282,9 @@ export default function ModelsCard({ providerId, kindFilter, providerAliasOverri
   ).map((m) => ({ ...m, isCustom: true }));
 
   const disabledSet = new Set(disabledModelIds);
-  const displayModels = builtInModels.filter((model) => !disabledSet.has(model.id));
-  const disabledDisplayModels = builtInModels.filter((model) => disabledSet.has(model.id));
+  const namedBuiltInModels = applyQoderModelNames(builtInModels, customModels, providerAlias);
+  const displayModels = namedBuiltInModels.filter((model) => !disabledSet.has(model.id));
+  const disabledDisplayModels = namedBuiltInModels.filter((model) => disabledSet.has(model.id));
 
   // Combine and sort models according to modelOrder
   const sortedModels = useMemo(() => {

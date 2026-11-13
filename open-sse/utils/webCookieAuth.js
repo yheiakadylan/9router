@@ -106,7 +106,9 @@ export function parseNetscapeCookieEntries(rawValue) {
 export function extractJsonCookieList(parsed) {
   if (Array.isArray(parsed)) return parsed;
   if (!parsed || typeof parsed !== "object") return null;
-  if (Array.isArray(parsed.cookies)) return parsed.cookies;
+  if ("cookies" in parsed) {
+    return Array.isArray(parsed.cookies) ? parsed.cookies : null;
+  }
   if (Array.isArray(parsed.data)) return parsed.data;
   if (Array.isArray(parsed.items)) return parsed.items;
   if (Array.isArray(parsed.log?.entries)) {
@@ -157,6 +159,17 @@ export function parseJsonCookiesToHeader(rawValue) {
   }
 
   return parts.join("; ");
+}
+
+/** Normalize a complete cookie jar without treating a bare value as a session. */
+export function normalizeCookieHeaderInput(rawValue) {
+  const stripped = stripCookieInputPrefix(String(rawValue ?? ""));
+  const jsonResult = parseJsonCookiesToHeader(stripped);
+  if (jsonResult !== null) return jsonResult;
+  if (stripped.startsWith("[") || stripped.startsWith("{")) {
+    throw new Error("Invalid cookie JSON: expected an array of cookie objects or an object with a cookies array");
+  }
+  return stripped;
 }
 
 export function normalizeSessionCookieHeader(rawValue, defaultCookieName) {

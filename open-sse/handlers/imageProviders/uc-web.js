@@ -12,7 +12,7 @@ export default {
   buildBody: () => ({}),
   normalize: (responseBody) => responseBody,
 
-  async executeViaExecutor(model, body, credentials, log) {
+  async executeViaExecutor(model, body, credentials, log, signal) {
     const executor = getExecutor("uc-web");
     if (!executor) throw new Error("uc-web executor not found");
 
@@ -23,6 +23,7 @@ export default {
       model,
       resolution: body.resolution,
       credentials,
+      signal,
       log,
     });
 

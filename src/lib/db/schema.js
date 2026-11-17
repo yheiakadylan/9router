@@ -3,7 +3,7 @@
 // pre-change safety backup in migrate.js: when the stored version is lower,
 // one lightweight DB backup is taken before applying schema changes. Forgetting
 // to bump only skips that backup — it does NOT break the additive auto-sync.
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export const PRAGMA_SQL = `
 PRAGMA journal_mode = WAL;
@@ -154,6 +154,37 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_provider ON requestDetails(provider)",
       "CREATE INDEX IF NOT EXISTS idx_rd_model ON requestDetails(model)",
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
+    ],
+  },
+  imageStudioConversations: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      title: "TEXT NOT NULL",
+      status: "TEXT NOT NULL DEFAULT 'idle'",
+      textModel: "TEXT",
+      imageModel: "TEXT",
+      data: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+      updatedAt: "TEXT NOT NULL",
+      expiresAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_isc_updated ON imageStudioConversations(updatedAt DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_isc_expires ON imageStudioConversations(expiresAt)",
+    ],
+  },
+  imageStudioAssets: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      conversationId: "TEXT NOT NULL",
+      mimeType: "TEXT NOT NULL",
+      fileName: "TEXT NOT NULL",
+      createdAt: "TEXT NOT NULL",
+      expiresAt: "TEXT NOT NULL",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_isa_conversation ON imageStudioAssets(conversationId)",
+      "CREATE INDEX IF NOT EXISTS idx_isa_expires ON imageStudioAssets(expiresAt)",
     ],
   },
 };

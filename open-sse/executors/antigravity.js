@@ -450,6 +450,21 @@ export class AntigravityExecutor extends BaseExecutor {
     }
 
     const status = response?.status || errorJson?.error?.code || HTTP_STATUS.BAD_GATEWAY;
+    // Google disables accounts with a 403 TOS_VIOLATION. Keep this distinct
+    // from quota errors so callers can show the appeal URL instead of a reset.
+    if (status === HTTP_STATUS.FORBIDDEN) {
+      const errorInfo = (errorJson?.error?.details || []).find((detail) =>
+        detail?.reason === "TOS_VIOLATION" || detail?.metadata?.reason === "TOS_VIOLATION"
+      );
+      if (errorInfo) {
+        const message = errorJson?.error?.message || bodyText || "Antigravity account disabled";
+        const appealUrl = errorInfo?.metadata?.appeal_url;
+        return {
+          status,
+          message: appealUrl ? `${message} Appeal: ${appealUrl}` : message,
+        };
+      }
+    }
     if (status !== HTTP_STATUS.RATE_LIMITED) return null;
 
     const now = Date.now();

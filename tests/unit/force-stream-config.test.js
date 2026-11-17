@@ -1,14 +1,17 @@
 // Guards forceStream moved from chatCore hardcode → PROVIDERS schema (#5).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { executeMock } = vi.hoisted(() => ({
+const { executeMock, refreshCredentialsMock, refreshWithRetryMock, parseUpstreamErrorMock } = vi.hoisted(() => ({
   executeMock: vi.fn(),
+  refreshCredentialsMock: vi.fn(),
+  refreshWithRetryMock: vi.fn(),
+  parseUpstreamErrorMock: vi.fn(),
 }));
 
 vi.mock("../../open-sse/executors/index.js", () => ({
   getExecutor: vi.fn(() => ({
     execute: executeMock,
-    refreshCredentials: vi.fn().mockResolvedValue(null),
+    refreshCredentials: refreshCredentialsMock,
   })),
 }));
 
@@ -39,7 +42,7 @@ vi.mock("../../open-sse/utils/streamHandler.js", () => ({
 }));
 
 vi.mock("../../open-sse/services/tokenRefresh.js", () => ({
-  refreshWithRetry: vi.fn(),
+  refreshWithRetry: refreshWithRetryMock,
 }));
 
 vi.mock("../../open-sse/utils/proxyFetch.js", () => ({
@@ -96,7 +99,7 @@ vi.mock("../../open-sse/handlers/chatCore/requestDetail.js", () => ({
 vi.mock("../../open-sse/utils/error.js", () => ({
   createErrorResult: vi.fn((status, message) => ({ success: false, status, error: message })),
   formatProviderError: vi.fn((error) => error.message),
-  parseUpstreamError: vi.fn(),
+  parseUpstreamError: parseUpstreamErrorMock,
 }));
 
 vi.mock("@/lib/usageDb.js", () => ({
@@ -135,6 +138,10 @@ describe("forceStream provider config", { timeout: 20_000 }, () => {
   beforeEach(() => {
     executeMock.mockReset();
     executeMock.mockRejectedValue(new Error("boom"));
+    refreshCredentialsMock.mockReset();
+    refreshCredentialsMock.mockResolvedValue(null);
+    refreshWithRetryMock.mockReset();
+    parseUpstreamErrorMock.mockReset();
   });
 
   it("only openai/codex/commandcode force streaming", async () => {
@@ -155,5 +162,35 @@ describe("forceStream provider config", { timeout: 20_000 }, () => {
 
     expect(executeMock).toHaveBeenCalledTimes(1);
     expect(executeMock.mock.calls[0][0].stream).toBe(true);
+  });
+
+  it("returns the error body from a failed retry after token refresh", async () => {
+    const refreshedMessage = "Terms of Service violation. Appeal: https://forms.gle/example";
+    executeMock
+      .mockReset()
+      .mockResolvedValueOnce({
+        response: new Response("", { status: 403 }),
+        url: "https://example.test/first",
+        headers: {},
+        transformedBody: {},
+      })
+      .mockResolvedValueOnce({
+        response: new Response(JSON.stringify({ error: { message: refreshedMessage } }), { status: 403 }),
+        url: "https://example.test/retry",
+        headers: {},
+        transformedBody: {},
+      });
+    refreshCredentialsMock.mockResolvedValue({ accessToken: "fresh-token" });
+    refreshWithRetryMock.mockImplementation((refresh) => refresh());
+    parseUpstreamErrorMock.mockImplementation(async (response) => ({
+      statusCode: response.status,
+      message: (await response.json()).error.message,
+    }));
+
+    const { handleChatCore } = await import("../../open-sse/handlers/chatCore.js");
+    const result = await handleChatCore(makeOptions(false));
+
+    expect(executeMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ success: false, status: 403, error: refreshedMessage });
   });
 });

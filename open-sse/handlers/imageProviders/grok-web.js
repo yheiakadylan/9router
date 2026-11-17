@@ -13,7 +13,7 @@ export default {
   buildBody: () => ({}),
   normalize: (responseBody) => responseBody,
 
-  async executeViaExecutor(model, body, credentials, log) {
+  async executeViaExecutor(model, body, credentials, log, signal) {
     const executor = getExecutor("grok-web");
     if (!executor) throw new Error("Grok Web executor not found");
 
@@ -23,6 +23,7 @@ export default {
       size: body.size,
       n: Math.max(1, Math.min(4, Number(body.n) || 1)),
       credentials,
+      signal,
       log,
     });
 

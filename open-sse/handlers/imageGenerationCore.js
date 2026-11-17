@@ -31,6 +31,7 @@ export async function handleImageGenerationCore({
   body,
   modelInfo,
   credentials,
+  signal,
   log,
   streamToClient = false,
   binaryOutput = false,
@@ -57,7 +58,7 @@ export async function handleImageGenerationCore({
   if (adapter.useExecutor && adapter.executeViaExecutor) {
     try {
       log?.debug?.("IMAGE", `${provider.toUpperCase()} | ${model} | prompt="${body.prompt.slice(0, 50)}..." (executor)`);
-      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log);
+      const responseBody = await adapter.executeViaExecutor(model, body, credentials, log, signal);
       if (onRequestSuccess) await onRequestSuccess();
       const normalized = adapter.normalize(responseBody, body.prompt);
       const finalBody = (normalized.created && Array.isArray(normalized.data)) ? normalized : responseBody;
@@ -88,6 +89,7 @@ export async function handleImageGenerationCore({
         }),
       };
     } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
       const statusCode = Number(error?.statusCode || error?.status) || HTTP_STATUS.BAD_GATEWAY;
       const errMsg = formatProviderError(error, provider, model, statusCode);
       log?.debug?.("IMAGE", `Executor error: ${errMsg}`);
@@ -121,8 +123,10 @@ export async function handleImageGenerationCore({
       method: "POST",
       headers,
       body: serializeRequestBody(requestBody),
+      signal,
     });
   } catch (error) {
+    if (signal?.aborted || error?.name === "AbortError") throw error;
     const errMsg = formatProviderError(error, provider, model, HTTP_STATUS.BAD_GATEWAY);
     log?.debug?.("IMAGE", `Fetch error: ${errMsg}`);
     return createErrorResult(HTTP_STATUS.BAD_GATEWAY, errMsg);
@@ -155,8 +159,10 @@ export async function handleImageGenerationCore({
           method: "POST",
           headers: retryHeaders,
           body: serializeRequestBody(retryBody),
+          signal,
         });
-      } catch {
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
         log?.warn?.("TOKEN", `${provider.toUpperCase()} | retry after refresh failed`);
       }
     } else {
@@ -176,10 +182,12 @@ export async function handleImageGenerationCore({
           method: "POST",
           headers: fallbackHeaders,
           body: serializeRequestBody(fallbackBody),
+          signal,
         });
         requestBody = fallbackBody;
         headers = fallbackHeaders;
-      } catch {
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
         log?.warn?.("IMAGE", `${provider.toUpperCase()} | fallback request failed`);
       }
     }
@@ -219,6 +227,7 @@ export async function handleImageGenerationCore({
       parsed = await providerResponse.json();
     }
   } catch (parseError) {
+    if (signal?.aborted || parseError?.name === "AbortError") throw parseError;
     const message = parseError.message || `Invalid response from ${provider}`;
     const requestScoped = adapter.isRequestScopedError?.(HTTP_STATUS.BAD_GATEWAY, message);
     const result = createErrorResult(requestScoped ? HTTP_STATUS.BAD_REQUEST : HTTP_STATUS.BAD_GATEWAY, message);

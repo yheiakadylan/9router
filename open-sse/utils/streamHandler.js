@@ -15,8 +15,11 @@ function getTimeString() {
  * @param {string} options.provider - Provider name
  * @param {string} options.model - Model name
  */
-export function createStreamController({ onDisconnect, onError, log, provider, model, reqTag = "" } = {}) {
+export function createStreamController({ onDisconnect, onError, signal: externalSignal, log, provider, model, reqTag = "" } = {}) {
   const abortController = new AbortController();
+  const signal = externalSignal
+    ? AbortSignal.any([abortController.signal, externalSignal])
+    : abortController.signal;
   const startTime = Date.now();
   let disconnected = false;
   let abortTimeout = null;
@@ -31,7 +34,7 @@ export function createStreamController({ onDisconnect, onError, log, provider, m
   };
 
   return {
-    signal: abortController.signal,
+    signal,
     startTime,
 
     isConnected: () => !disconnected,

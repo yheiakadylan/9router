@@ -81,7 +81,7 @@ export default {
   buildHeaders: () => ({}),
   buildBody: () => ({}),
 
-  async executeViaExecutor(model, body, credentials, log) {
+  async executeViaExecutor(model, body, credentials, log, signal) {
     const executor = getExecutor("antigravity");
     if (!executor) throw new Error("Antigravity executor not found");
 
@@ -132,6 +132,7 @@ export default {
       body: chatBody,
       stream: false,
       credentials,
+      signal,
       log,
     });
 

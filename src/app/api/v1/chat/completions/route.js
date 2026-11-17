@@ -1,5 +1,6 @@
 import { handleChat } from "@/sse/handlers/chat.js";
 import { initTranslators } from "open-sse/translator/index.js";
+import { getImageStudioAssetDataUrl } from "@/lib/db";
 
 let initialized = false;
 
@@ -29,7 +30,30 @@ export async function OPTIONS() {
 export async function POST(request) {  
   // Fallback to local handling
   await ensureInitialized();
-  
+
+  if (request.headers.get("x-image-studio-conversation-id")) {
+    try {
+      const body = await request.clone().json();
+      for (const message of body.messages || []) {
+        if (!Array.isArray(message?.content)) continue;
+        for (const part of message.content) {
+          const value = part?.image_url?.url;
+          const match = typeof value === "string" ? value.match(/^\/api\/image-studio\/assets\/([^/?#]+)/) : null;
+          if (!match) continue;
+          const dataUrl = await getImageStudioAssetDataUrl(decodeURIComponent(match[1]));
+          if (dataUrl) part.image_url.url = dataUrl;
+        }
+      }
+      request = new Request(request.url, {
+        method: request.method,
+        headers: request.headers,
+        body: JSON.stringify(body),
+      });
+    } catch {
+      // The chat handler owns malformed JSON errors.
+    }
+  }
+
   return await handleChat(request);
 }
 

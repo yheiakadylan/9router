@@ -112,6 +112,15 @@ describe("buildStreamErrorBytes", () => {
 // The wiring, not just the frame builder: the watchdog must hand its reason to
 // onAbortTerminal and the bytes must reach a real consumer.
 describe("stall abort through pipeWithDisconnect", () => {
+  it("combines an external abort signal with the stream controller", () => {
+    const external = new AbortController();
+    const ctrl = createStreamController({ provider: "ollama", model: "test", signal: external.signal });
+
+    external.abort();
+
+    expect(ctrl.signal.aborted).toBe(true);
+  });
+
   it("delivers the error frame and closes the stream", async () => {
     // Real controller: the stub above never fires its signal, and the abort
     // must reach the upstream body for the pipe to end.

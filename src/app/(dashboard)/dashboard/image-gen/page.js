@@ -1,96 +1,21 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/shared/components";
 import { getModelKind, getModelsByProviderId } from "@/shared/constants/models";
 import { getProviderAlias, getProvidersByKind } from "@/shared/constants/providers";
 import { isImageGenEnabled, subscribeImageGenAccess } from "@/shared/utils/imageGenAccess";
 
-const CHAT_ENDPOINT = "/api/v1/chat/completions";
-const IMAGE_ENDPOINT = "/api/v1/images/generations";
 const MAX_IMAGE_RETRIES = 3;
-const MAX_IMAGE_ATTEMPTS = 4;
-
-const IMAGE_AGENT_TOOLS = [{
-  type: "function",
-  function: {
-    name: "generate_image",
-    description: "Generate exactly one image from this prompt. Call this tool once for every separate output image; each call must have a distinct self-contained prompt.",
-    parameters: {
-      type: "object",
-      properties: {
-        prompt: { type: "string", description: "Complete visual prompt for the image." },
-      },
-      required: ["prompt"],
-      additionalProperties: false,
-    },
-  },
-}];
-
-const AGENT_SYSTEM_PROMPT = `You are a helpful ChatGPT-style assistant with optional image generation.
-Answer normal questions in text. Call generate_image only when the user clearly asks to create, edit, transform, or produce an image.
-If the user asks for multiple separate images, call generate_image once for every output image and make each prompt self-contained and distinct. For example, "dog, cat, bird, mouse, pig" means five tool calls and five image requests, one subject per prompt. Never reuse one prompt five times. A collage, grid, contact sheet, or single scene is one image unless separate files are explicitly requested.
-Preserve all visual requirements in the image prompt. Also provide a short natural text reply while the images are being generated.`;
 
 function createId(prefix) {
   return globalThis.crypto?.randomUUID?.() || `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
 }
 
-function readRawDataUrl(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.onerror = () => reject(reader.error || new Error("Failed to read image"));
-    reader.readAsDataURL(file);
-  });
-}
-
-async function fileToDataUrl(file) {
-  const rawDataUrl = await readRawDataUrl(file);
-  if (!file || file.size <= 512 * 1024 || typeof document === "undefined" || typeof Image === "undefined") {
-    return rawDataUrl;
-  }
-  try {
-    const img = await new Promise((resolve, reject) => {
-      const element = new Image();
-      element.onload = () => resolve(element);
-      element.onerror = () => reject(new Error("Failed to decode image"));
-      element.src = rawDataUrl;
-    });
-    const srcWidth = img.naturalWidth || img.width || 1;
-    const srcHeight = img.naturalHeight || img.height || 1;
-    const maxDim = 1536;
-    const scale = Math.min(1, maxDim / Math.max(srcWidth, srcHeight));
-    const width = Math.max(1, Math.round(srcWidth * scale));
-    const height = Math.max(1, Math.round(srcHeight * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return rawDataUrl;
-    if (file.type === "image/png") {
-      ctx.drawImage(img, 0, 0, width, height);
-      const pngDataUrl = canvas.toDataURL("image/png");
-      if (pngDataUrl.length <= 750_000) return pngDataUrl.length < rawDataUrl.length ? pngDataUrl : rawDataUrl;
-      ctx.clearRect(0, 0, width, height);
-    }
-    ctx.fillStyle = "#ffffff";
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(img, 0, 0, width, height);
-    let compressed = canvas.toDataURL("image/jpeg", 0.85);
-    if (compressed.length > 750_000) {
-      compressed = canvas.toDataURL("image/jpeg", 0.72);
-    }
-    return compressed.length < rawDataUrl.length ? compressed : rawDataUrl;
-  } catch {
-    return rawDataUrl;
-  }
-}
-
 function imageSrc(value) {
   if (!value) return "";
-  if (/^(data:image\/|https?:\/\/)/i.test(value)) return value;
+  if (/^(data:image\/|https?:\/\/|blob:|\/api\/image-studio\/assets\/)/i.test(value)) return value;
   return `data:image/png;base64,${value}`;
 }
 
@@ -255,7 +180,7 @@ function MarkdownText({ content }) {
       }
       i++;
       elements.push(
-        <blockquote key={elements.length} className="my-1.5 border-l-4 border-primary/60 bg-surface-2/40 rounded-r-md px-3 py-1.5 italic text-text-muted">
+        <blockquote key={elements.length} className="my-1.5 rounded-md border border-border/70 bg-surface-2/40 px-3 py-1.5 italic text-text-muted">
           {quoteLines.map((qLine, qIdx) => (
             <p key={qIdx} className={qIdx > 0 ? "mt-1" : ""}>
               {renderInline(qLine)}
@@ -376,11 +301,6 @@ function ImageGeneratingPlaceholder({ label, attempt = 1 }) {
   </div>;
 }
 
-function getImageItems(payload) {
-  const data = payload?.data?.data || payload?.data || [];
-  return Array.isArray(data) ? data : [];
-}
-
 function modelOptions(connections, disabled, kind, modelOrders = {}) {
   const activeProviders = new Set(
     connections.filter((connection) => connection.isActive !== false).map((connection) => connection.provider),
@@ -416,116 +336,11 @@ function modelOptions(connections, disabled, kind, modelOrders = {}) {
   });
 }
 
-function appendToolCall(toolCalls, delta) {
-  for (const call of delta || []) {
-    const index = Number.isInteger(call.index) ? call.index : toolCalls.length;
-    const current = toolCalls[index] || { name: "", arguments: "" };
-    current.name += call.function?.name || "";
-    const args = call.function?.arguments;
-    current.arguments += typeof args === "string" ? args : args ? JSON.stringify(args) : "";
-    toolCalls[index] = current;
-  }
-}
-
-async function consumeChatResponse(response, onText, signal) {
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.includes("text/event-stream") || !response.body) {
-    const payload = await response.json();
-    const message = payload?.choices?.[0]?.message || {};
-    return {
-      text: message.content || "",
-      toolCalls: message.tool_calls || (message.function_call ? [{ function: message.function_call }] : []),
-    };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-  const toolCalls = [];
-  while (true) {
-    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const lines = buffer.split(/\r?\n/);
-    buffer = done ? "" : lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const raw = trimmed.slice(5).trim();
-      if (!raw || raw === "[DONE]") continue;
-      let chunk;
-      try { chunk = JSON.parse(raw); } catch { continue; }
-      const delta = chunk.choices?.[0]?.delta || {};
-      const textDelta = typeof delta.content === "string" ? delta.content : "";
-      if (textDelta) {
-        text += textDelta;
-        onText?.(text);
-      }
-      appendToolCall(toolCalls, delta.tool_calls || (delta.function_call ? [{ function: delta.function_call }] : []));
-    }
-    if (done) break;
-  }
-  return { text, toolCalls };
-}
-
-async function generateOneImage({ model, prompt, references, apiKey, signal }) {
-  const body = {
-    model,
-    prompt,
-    output_format: "png",
-    ...(references.length > 1 ? { images: references } : {}),
-    ...(references.length === 1 ? { image: references[0] } : {}),
-  };
-  const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
-  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-  const response = await fetch(IMAGE_ENDPOINT, { method: "POST", headers, body: JSON.stringify(body), signal });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({}));
-    throw new Error(payload?.error?.message || payload?.error || `Image generation failed (HTTP ${response.status})`);
-  }
-
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.includes("text/event-stream") || !response.body) return getImageItems(await response.json());
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let finalPayload = null;
-  while (true) {
-    const { value, done } = await reader.read();
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-    const blocks = buffer.split(/\r?\n\r?\n/);
-    buffer = done ? "" : blocks.pop() || "";
-    for (const block of blocks) {
-      let eventName = "";
-      let data = "";
-      for (const line of block.split(/\r?\n/)) {
-        if (line.startsWith("event:")) eventName = line.slice(6).trim();
-        if (line.startsWith("data:")) data += line.slice(5).trim();
-      }
-      if (!data) continue;
-      let payload;
-      try { payload = JSON.parse(data); } catch { continue; }
-      if (eventName === "error") throw new Error(payload.message || "Image generation failed");
-      if (eventName === "done") finalPayload = payload;
-    }
-    if (done) break;
-  }
-  return getImageItems(finalPayload);
-}
-
-async function generateImageWithRetries(options, onAttempt) {
-  for (let attempt = 1; attempt <= MAX_IMAGE_ATTEMPTS; attempt += 1) {
-    onAttempt?.(attempt);
-    try {
-      const first = (await generateOneImage(options))[0];
-      if (!first) throw new Error("No image returned");
-      return first;
-    } catch (error) {
-      if (error.name === "AbortError" || attempt === MAX_IMAGE_ATTEMPTS) throw error;
-    }
-  }
+function ConversationStatus({ status }) {
+  if (status === "generating") return <span className="flex size-5 items-center justify-center" title="Generating"><span className="material-symbols-outlined animate-spin text-[17px] text-primary">progress_activity</span></span>;
+  if (status === "success") return <span className="material-symbols-outlined text-[18px] text-green-500" title="Completed">check_circle</span>;
+  if (status === "error") return <span className="material-symbols-outlined text-[18px] text-red-500" title="Failed">error</span>;
+  return <span className="material-symbols-outlined text-[17px] text-text-muted" title="Ready">chat_bubble</span>;
 }
 
 export default function ImageGenerationPage() {
@@ -536,18 +351,80 @@ export default function ImageGenerationPage() {
   const [textModel, setTextModel] = useState("");
   const [imageModel, setImageModel] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [messages, setMessages] = useState([]);
+  const [conversations, setConversations] = useState([]);
+  const [activeJobs, setActiveJobs] = useState({});
+  const [conversationId, setConversationId] = useState("");
   const [activeImageByMessage, setActiveImageByMessage] = useState({});
   const [previewImage, setPreviewImage] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [references, setReferences] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [sending, setSending] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [error, setError] = useState("");
-  const abortRef = useRef(null);
+  const conversationsRef = useRef([]);
+  const saveQueuesRef = useRef(new Map());
   const scrollRef = useRef(null);
   const promptInputRef = useRef(null);
+
+  const activeConversation = useMemo(
+    () => conversations.find((conversation) => conversation.id === conversationId) || null,
+    [conversations, conversationId]
+  );
+  const messages = useMemo(() => activeConversation?.messages || [], [activeConversation]);
+  const sending = Boolean(activeJobs[conversationId]);
+  const hasGeneratingConversations = conversations.some((conversation) => conversation.status === "generating");
+  const selectedTextModel = useMemo(() => chatModels.find((model) => model.id === textModel), [chatModels, textModel]);
+  const selectedImageModel = useMemo(() => imageModels.find((model) => model.id === imageModel), [imageModels, imageModel]);
+
+  function replaceConversations(updater) {
+    const next = typeof updater === "function" ? updater(conversationsRef.current) : updater;
+    conversationsRef.current = next;
+    setConversations(next);
+    return next;
+  }
+
+  function patchConversation(id, updater) {
+    let patched = null;
+    replaceConversations((current) => current.map((conversation) => {
+      if (conversation.id !== id) return conversation;
+      patched = typeof updater === "function" ? updater(conversation) : { ...conversation, ...updater };
+      return patched;
+    }));
+    return patched;
+  }
+
+  async function persistConversation(conversation) {
+    if (!conversation) return;
+    const payload = {
+      title: conversation.title,
+      status: conversation.status,
+      textModel: conversation.textModel,
+      imageModel: conversation.imageModel,
+      messages: conversation.messages || [],
+    };
+    const previous = saveQueuesRef.current.get(conversation.id) || Promise.resolve();
+    const next = previous.catch(() => {}).then(() => fetch(`/api/image-studio/conversations/${encodeURIComponent(conversation.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })).catch(() => {});
+    saveQueuesRef.current.set(conversation.id, next);
+    await next;
+  }
+
+  function patchMessages(id, updater) {
+    return patchConversation(id, (conversation) => ({
+      ...conversation,
+      messages: updater(conversation.messages || []),
+    }));
+  }
+
+  const applyConversationPayload = useCallback((payload) => {
+    const next = payload.conversations || [];
+    conversationsRef.current = next;
+    setConversations(next);
+    setActiveJobs(Object.fromEntries((payload.jobs || []).map((job) => [job.conversationId, job.id])));
+  }, []);
 
   useEffect(() => subscribeImageGenAccess(setImageGenEnabled), []);
 
@@ -557,45 +434,63 @@ export default function ImageGenerationPage() {
 
   useEffect(() => {
     if (!imageGenEnabled) {
-      setLoading(false);
       return undefined;
     }
     let cancelled = false;
     async function load() {
       try {
-        const [providersRes, disabledRes, keysRes, orderRes] = await Promise.all([
+        const [providersRes, disabledRes, keysRes, orderRes, conversationsRes] = await Promise.all([
           fetch("/api/providers", { cache: "no-store" }),
           fetch("/api/models/disabled", { cache: "no-store" }),
           fetch("/api/keys", { cache: "no-store" }),
           fetch("/api/models/order", { cache: "no-store" }).catch(() => null),
+          fetch("/api/image-studio/conversations", { cache: "no-store" }),
         ]);
         const providersData = await providersRes.json().catch(() => ({}));
         const disabledData = await disabledRes.json().catch(() => ({}));
         const keysData = await keysRes.json().catch(() => ({}));
         const orderData = orderRes && orderRes.ok ? await orderRes.json().catch(() => ({})) : {};
+        const conversationData = await conversationsRes.json().catch(() => ({}));
         if (cancelled) return;
         const connections = providersData.connections || [];
         const disabled = disabledData.disabled || {};
         const modelOrders = orderData.orders || {};
         const nextChatModels = modelOptions(connections, disabled, "llm", modelOrders);
         const nextImageModels = modelOptions(connections, disabled, "image", modelOrders);
+        const hasCustomChatOrder = Object.keys(modelOrders).some((key) => key.endsWith(":llm") && modelOrders[key]?.length > 0);
+        const hasCustomImageOrder = Object.keys(modelOrders).some((key) => key.endsWith(":image") && modelOrders[key]?.length > 0);
+        const defaultTextModel = hasCustomChatOrder
+          ? nextChatModels[0]?.id || ""
+          : nextChatModels.find((model) => model.id === "cx/gpt-6-sol" || model.id === "cx/gpt-5.5")?.id || nextChatModels[0]?.id || "";
+        const defaultImageModel = hasCustomImageOrder
+          ? nextImageModels[0]?.id || ""
+          : nextImageModels.find((model) => model.id === "cx/gpt-6-sol-image" || model.id === "cx/gpt-image-2.5" || model.id === "cx/gpt-5.5-image")?.id || nextImageModels[0]?.id || "";
         setChatModels(nextChatModels);
         setImageModels(nextImageModels);
-        const hasCustomChatOrder = Object.keys(modelOrders).some((k) => k.endsWith(":llm") && modelOrders[k]?.length > 0);
-        const hasCustomImageOrder = Object.keys(modelOrders).some((k) => k.endsWith(":image") && modelOrders[k]?.length > 0);
-        setTextModel(
-          hasCustomChatOrder
-            ? (nextChatModels[0]?.id || "")
-            : ((nextChatModels.find((model) => model.id === "cx/gpt-6-sol" || model.id === "cx/gpt-5.5"))?.id || nextChatModels[0]?.id || "")
-        );
-        setImageModel(
-          hasCustomImageOrder
-            ? (nextImageModels[0]?.id || "")
-            : ((nextImageModels.find((model) => model.id === "cx/gpt-6-sol-image" || model.id === "cx/gpt-image-2.5" || model.id === "cx/gpt-5.5-image"))?.id || nextImageModels[0]?.id || "")
-        );
         setApiKey((keysData.keys || []).find((key) => key.isActive !== false)?.key || "");
+
+        let saved = conversationData.conversations || [];
+        if (saved.length === 0) {
+          const createResponse = await fetch("/api/image-studio/conversations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ textModel: defaultTextModel, imageModel: defaultImageModel }),
+          });
+          const created = await createResponse.json().catch(() => ({}));
+          saved = created.conversation ? [created.conversation] : [];
+        }
+        applyConversationPayload({ ...conversationData, conversations: saved });
+        const first = saved[0];
+        if (first) {
+          setConversationId(first.id);
+          setTextModel(first.textModel || defaultTextModel);
+          setImageModel(first.imageModel || defaultImageModel);
+        } else {
+          setTextModel(defaultTextModel);
+          setImageModel(defaultImageModel);
+        }
       } catch (loadError) {
-        if (!cancelled) setError(loadError.message || "Failed to load models");
+        if (!cancelled) setError(loadError.message || "Failed to load Image Studio");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -603,13 +498,28 @@ export default function ImageGenerationPage() {
     load();
     return () => {
       cancelled = true;
-      abortRef.current?.abort();
     };
-  }, [imageGenEnabled]);
+  }, [applyConversationPayload, imageGenEnabled]);
 
   useEffect(() => {
-    if (!messages.length) return;
-    scrollRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (!hasGeneratingConversations) return undefined;
+    let cancelled = false;
+    async function refreshGeneratingConversations() {
+      try {
+        const response = await fetch("/api/image-studio/conversations", { cache: "no-store" });
+        const payload = await response.json().catch(() => ({}));
+        if (!cancelled && response.ok) applyConversationPayload(payload);
+      } catch {}
+    }
+    const timer = setInterval(refreshGeneratingConversations, 1500);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [applyConversationPayload, hasGeneratingConversations]);
+
+  useEffect(() => {
+    if (messages.length > 0) scrollRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
   useEffect(() => {
@@ -621,12 +531,46 @@ export default function ImageGenerationPage() {
     return () => window.removeEventListener("keydown", closePreview);
   }, [previewImage]);
 
-  const selectedTextModel = useMemo(() => chatModels.find((model) => model.id === textModel), [chatModels, textModel]);
-  const selectedImageModel = useMemo(() => imageModels.find((model) => model.id === imageModel), [imageModels, imageModel]);
+  async function createConversation() {
+    try {
+      const response = await fetch("/api/image-studio/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ textModel, imageModel }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Failed to create chat");
+      replaceConversations((current) => [payload.conversation, ...current].slice(0, 20));
+      setConversationId(payload.conversation.id);
+      setPrompt("");
+      setReferences([]);
+      setError("");
+    } catch (createError) {
+      setError(createError.message || "Failed to create chat");
+    }
+  }
 
-  const updateAssistant = (id, update) => {
-    setMessages((current) => current.map((message) => message.id === id ? { ...message, ...update } : message));
-  };
+  function selectConversation(conversation) {
+    setConversationId(conversation.id);
+    setTextModel(conversation.textModel || textModel);
+    setImageModel(conversation.imageModel || imageModel);
+    setPrompt("");
+    setReferences([]);
+    setError("");
+  }
+
+  async function removeConversation(event, id) {
+    event.stopPropagation();
+    const jobId = activeJobs[id];
+    if (jobId) await fetch(`/api/image-studio/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+    await fetch(`/api/image-studio/conversations/${encodeURIComponent(id)}`, { method: "DELETE" }).catch(() => {});
+    const remaining = conversationsRef.current.filter((conversation) => conversation.id !== id);
+    replaceConversations(remaining);
+    if (conversationId === id) {
+      if (remaining[0]) selectConversation(remaining[0]);
+      else await createConversation();
+    }
+  }
 
   const copyMessage = async (message) => {
     try {
@@ -638,187 +582,114 @@ export default function ImageGenerationPage() {
     }
   };
 
-  const buildMessages = (nextMessages) => [
-    { role: "system", content: AGENT_SYSTEM_PROMPT },
-    ...nextMessages.slice(-12).map((message) => {
-      if (message.role !== "user") return { role: message.role, content: message.content || "" };
-      if (!message.references?.length) return { role: "user", content: message.content };
-      return {
-        role: "user",
-        content: [
-          { type: "text", text: message.content },
-          ...message.references.map((url) => ({ type: "image_url", image_url: { url } })),
-        ],
-      };
-    }),
-  ];
-
-  const sendMessage = async () => {
-    if (!prompt.trim() || !selectedTextModel || !selectedImageModel || sending) return;
+  async function sendMessage() {
+    if (!conversationId || !prompt.trim() || !selectedTextModel || !selectedImageModel || activeJobs[conversationId]) return;
+    const currentId = conversationId;
+    const previousConversation = activeConversation;
     const userMessage = { id: createId("user"), role: "user", content: prompt.trim(), references };
     const assistantId = createId("assistant");
     const nextMessages = [...messages, userMessage];
-    setMessages([...nextMessages, { id: assistantId, role: "assistant", content: "", images: [], references: userMessage.references, phase: "thinking" }]);
+    const title = messages.length === 0 ? userMessage.content.slice(0, 64) : activeConversation.title;
+    const conversation = patchConversation(currentId, (current) => ({
+      ...current,
+      title,
+      status: "generating",
+      textModel: selectedTextModel.id,
+      imageModel: selectedImageModel.id,
+      messages: [...nextMessages, { id: assistantId, role: "assistant", content: "", images: [], phase: "thinking" }],
+    }));
     setPrompt("");
-    if (promptInputRef.current) promptInputRef.current.style.height = "";
     setReferences([]);
-    setSending(true);
     setError("");
-    const controller = new AbortController();
-    abortRef.current = controller;
-
+    if (promptInputRef.current) promptInputRef.current.style.height = "";
     try {
-      const headers = { "Content-Type": "application/json" };
-      if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-      const response = await fetch(CHAT_ENDPOINT, {
+      const response = await fetch("/api/image-studio/jobs", {
         method: "POST",
-        headers,
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: selectedTextModel.id,
-          messages: buildMessages(nextMessages),
-          tools: IMAGE_AGENT_TOOLS,
-          tool_choice: "auto",
-          parallel_tool_calls: true,
-          stream: true,
+          conversationId: currentId,
+          assistantId,
+          title,
+          textModel: selectedTextModel.id,
+          imageModel: selectedImageModel.id,
+          apiKey,
+          messages: conversation.messages,
+          userPrompt: userMessage.content,
+          userReferences: userMessage.references,
         }),
-        signal: controller.signal,
       });
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload?.error?.message || payload?.error || `Chat model failed (HTTP ${response.status})`);
+        throw new Error(payload.error || `Failed to start job (HTTP ${response.status})`);
       }
-
-      const { text, toolCalls } = await consumeChatResponse(response, (nextText) => {
-        updateAssistant(assistantId, { content: nextText, phase: "thinking" });
-      }, controller.signal);
-      updateAssistant(assistantId, { content: text, phase: toolCalls.length ? "generating" : "done" });
-
-      const plannedImages = [];
-      for (const toolCall of toolCalls) {
-        if (toolCall.name !== "generate_image") continue;
-        let args = {};
-        if (toolCall.arguments && typeof toolCall.arguments === "object") {
-          args = toolCall.arguments;
-        } else {
-          try { args = JSON.parse(toolCall.arguments || "{}"); } catch { args = {}; }
-        }
-        const imagePrompt = typeof args.prompt === "string" && args.prompt.trim() ? args.prompt.trim() : userMessage.content;
-        plannedImages.push({ id: createId("image"), prompt: imagePrompt, status: "generating", attempt: 1, startedAt: Date.now(), elapsedMs: 0 });
-      }
-      if (!plannedImages.length) {
-        updateAssistant(assistantId, { phase: "done" });
-        return;
-      }
-      updateAssistant(assistantId, { phase: "generating", images: plannedImages, generationStartedAt: plannedImages[0].startedAt });
-
-      await Promise.all(plannedImages.map(async (image) => {
-        try {
-          const first = await generateImageWithRetries(
-            { model: selectedImageModel.id, prompt: image.prompt, references: userMessage.references || [], apiKey, signal: controller.signal },
-            (attempt) => {
-              if (attempt === 1) return;
-              setMessages((current) => current.map((message) => message.id === assistantId
-                ? { ...message, images: (message.images || []).map((entry) => entry.id === image.id ? { ...entry, attempt } : entry) }
-                : message));
-            },
-          );
-          const completedAt = Date.now();
-          setMessages((current) => current.map((message) => {
-            if (message.id !== assistantId) return message;
-            return {
-              ...message,
-              phase: "generating",
-              images: (message.images || []).map((entry) => entry.id === image.id
-                ? { ...entry, status: "done", src: imageSrc(first.b64_json || first.url), error: "", completedAt, elapsedMs: completedAt - entry.startedAt }
-                : entry),
-            };
-          }));
-        } catch (imageError) {
-          const completedAt = Date.now();
-          setMessages((current) => current.map((message) => message.id === assistantId
-            ? { ...message, images: (message.images || []).map((entry) => entry.id === image.id ? { ...entry, status: "error", error: imageError.message || "Image generation failed", completedAt, elapsedMs: completedAt - entry.startedAt } : entry) }
-            : message));
-        }
-      }));
-      updateAssistant(assistantId, { phase: "done", generationCompletedAt: Date.now() });
+      setActiveJobs((current) => ({ ...current, [currentId]: payload.jobId }));
     } catch (sendError) {
-      if (sendError.name === "AbortError") {
-        const stoppedAt = Date.now();
-        setMessages((current) => current.map((message) => message.id === assistantId
-          ? {
-              ...message,
-              phase: "done",
-              generationCompletedAt: stoppedAt,
-              images: (message.images || []).map((image) => image.status === "generating"
-                ? { ...image, status: "error", error: "Generation stopped" }
-                : image),
-            }
-          : message));
-      } else {
-        setError(sendError.message || "Request failed");
-        updateAssistant(assistantId, { phase: "error", content: sendError.message || "Request failed" });
-      }
-    } finally {
-      setSending(false);
-      abortRef.current = null;
+      patchConversation(currentId, previousConversation);
+      setPrompt(userMessage.content);
+      setReferences(userMessage.references);
+      setError(sendError.message || "Failed to start job");
     }
-  };
+  }
 
-  const retryImage = async (messageId, imageId) => {
-    if (!selectedImageModel) return;
-    const messageIndex = messages.findIndex((message) => message.id === messageId);
-    const message = messages[messageIndex];
-    const image = message?.images?.find((entry) => entry.id === imageId);
-    if (!message || !image || image.status === "generating") return;
-    const referencesForRetry = message.references || messages[messageIndex - 1]?.references || [];
-    const startedAt = Date.now();
-    setMessages((current) => current.map((entry) => entry.id === messageId
-      ? { ...entry, phase: "generating", generationStartedAt: startedAt, generationCompletedAt: undefined, images: (entry.images || []).map((item) => item.id === imageId ? { ...item, status: "generating", attempt: 1, startedAt, elapsedMs: 0, error: "" } : item) }
-      : entry));
+  async function retryImage(messageId, imageId) {
+    if (!selectedImageModel || !conversationId || activeJobs[conversationId]) return;
+    const currentId = conversationId;
     try {
-      const first = await generateImageWithRetries(
-        { model: selectedImageModel.id, prompt: image.prompt, references: referencesForRetry, apiKey },
-        (attempt) => {
-          if (attempt === 1) return;
-          setMessages((current) => current.map((entry) => entry.id === messageId
-            ? { ...entry, images: (entry.images || []).map((item) => item.id === imageId ? { ...item, attempt } : item) }
-            : entry));
-        },
-      );
-      const completedAt = Date.now();
-      setMessages((current) => current.map((entry) => {
-        if (entry.id !== messageId) return entry;
-        const images = (entry.images || []).map((item) => item.id === imageId
-          ? { ...item, status: "done", src: imageSrc(first.b64_json || first.url), error: "", completedAt, elapsedMs: completedAt - startedAt }
-          : item);
-        return { ...entry, phase: images.some((item) => item.status === "generating") ? "generating" : "done", images, generationCompletedAt: images.some((item) => item.status === "generating") ? undefined : completedAt };
-      }));
-    } catch (imageError) {
-      const completedAt = Date.now();
-      setMessages((current) => current.map((entry) => {
-        if (entry.id !== messageId) return entry;
-        const images = (entry.images || []).map((item) => item.id === imageId ? { ...item, status: "error", error: imageError.message || "Image generation failed", completedAt, elapsedMs: completedAt - startedAt } : item);
-        return { ...entry, phase: images.some((item) => item.status === "generating") ? "generating" : "done", images, generationCompletedAt: images.some((item) => item.status === "generating") ? undefined : completedAt };
-      }));
+      const response = await fetch("/api/image-studio/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          conversationId: currentId,
+          assistantId: messageId,
+          title: activeConversation.title,
+          textModel: selectedTextModel?.id || activeConversation.textModel,
+          imageModel: selectedImageModel.id,
+          apiKey,
+          messages,
+          retry: { messageId, imageId },
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Failed to retry image");
+      patchConversation(currentId, { status: "generating" });
+      setActiveJobs((current) => ({ ...current, [currentId]: payload.jobId }));
+    } catch (retryError) {
+      setError(retryError.message || "Failed to retry image");
     }
-  };
+  }
 
-  const addReferenceFiles = async (files) => {
-    const imageFiles = files.filter((file) => file?.type?.startsWith("image/"));
+  async function stopJob() {
+    const jobId = activeJobs[conversationId];
+    if (!jobId) return;
+    await fetch(`/api/image-studio/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" }).catch(() => {});
+  }
+
+  async function uploadAsset(file) {
+    const form = new FormData();
+    form.append("conversationId", conversationId);
+    form.append("file", file);
+    const response = await fetch("/api/image-studio/assets", { method: "POST", body: form });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || "Failed to save image");
+    return payload.asset.url;
+  }
+
+  async function addReferenceFiles(files) {
+    const imageFiles = files.filter((file) => file?.type?.startsWith("image/")).slice(0, 4);
     try {
-      const next = await Promise.all(imageFiles.slice(0, 4).map(async (file) => ({ name: file.name, dataUrl: await fileToDataUrl(file) })));
-      setReferences((current) => [...current, ...next.map((file) => file.dataUrl)]);
+      const urls = await Promise.all(imageFiles.map(uploadAsset));
+      setReferences((current) => [...new Set([...current, ...urls])].slice(0, 4));
     } catch (fileError) {
-      setError(fileError.message || "Failed to read image");
+      setError(fileError.message || "Failed to save image");
     }
-  };
+  }
 
-  const handleFiles = async (event) => {
+  async function handleFiles(event) {
     await addReferenceFiles(Array.from(event.target.files || []));
     event.target.value = "";
-  };
+  }
 
-  const handlePaste = async (event) => {
+  async function handlePaste(event) {
     const files = Array.from(event.clipboardData?.items || [])
       .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
       .map((item) => item.getAsFile())
@@ -826,126 +697,129 @@ export default function ImageGenerationPage() {
     if (files.length === 0) return;
     event.preventDefault();
     await addReferenceFiles(files);
-  };
-
-  const resetChat = () => {
-    if (sending) abortRef.current?.abort();
-    setMessages([]);
-    setActiveImageByMessage({});
-    setPreviewImage(null);
-    setPrompt("");
-    if (promptInputRef.current) promptInputRef.current.style.height = "";
-    setReferences([]);
-    setError("");
-  };
-
-  if (!imageGenEnabled) {
-    return <div className="flex h-full items-center justify-center text-sm text-text-muted"></div>;
   }
 
+  async function handleDrop(event) {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer?.files || []);
+    if (files.length > 0) {
+      await addReferenceFiles(files);
+      return;
+    }
+    const src = event.dataTransfer?.getData("application/x-9router-image")
+      || event.dataTransfer?.getData("text/uri-list")
+      || event.dataTransfer?.getData("text/plain");
+    if (/^\/api\/image-studio\/assets\//.test(src || "")) addImageToChat(src);
+  }
+
+  function handleImageDragStart(event, src) {
+    if (!src) return;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-9router-image", src);
+    event.dataTransfer.setData("text/uri-list", src);
+  }
+
+  function addImageToChat(src) {
+    if (!src) return;
+    setReferences((current) => [...new Set([...current, src])].slice(0, 4));
+    promptInputRef.current?.focus();
+  }
+
+  function changeTextModel(value) {
+    setTextModel(value);
+    persistConversation(patchConversation(conversationId, { textModel: value }));
+  }
+
+  function changeImageModel(value) {
+    setImageModel(value);
+    persistConversation(patchConversation(conversationId, { imageModel: value }));
+  }
+
+  if (!imageGenEnabled) return <div className="flex h-full items-center justify-center text-sm text-text-muted" />;
+
+  const conversationButtons = conversations.map((conversation) => (
+    <div key={conversation.id} className={`group flex min-w-48 items-center rounded-xl transition-colors ${conversation.id === conversationId ? "bg-primary/10 text-text-main" : "text-text-muted hover:bg-surface-2 hover:text-text-main"}`}>
+      <button type="button" onClick={() => selectConversation(conversation)} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left">
+        <ConversationStatus status={conversation.status} />
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{conversation.title || "New image chat"}</span>
+      </button>
+      <button type="button" onClick={(event) => removeConversation(event, conversation.id)} className="mr-2 hidden size-7 items-center justify-center rounded-md opacity-60 hover:bg-red-500/10 hover:text-red-500 group-hover:flex focus:flex" aria-label="Delete conversation"><span className="material-symbols-outlined text-[16px]">delete</span></button>
+    </div>
+  ));
+
   return (
-    <div className="flex min-h-full flex-col gap-3">
-      <div className="sticky top-14 z-20 -mx-2 flex flex-wrap items-end justify-between gap-3 bg-transparent px-2 pb-3 pt-1 sm:-mx-4 sm:px-4">
-        <div>
-          <h1 className="text-3xl font-semibold tracking-tight">Image Studio</h1>
-          <p className="mt-1 text-sm text-text-muted">Chat first. The text model plans, then image generation starts immediately.</p>
+    <div className="flex min-h-[calc(100vh-7rem)] gap-3">
+      <aside className="hidden w-60 shrink-0 flex-col rounded-2xl bg-surface-2/55 p-2 lg:flex">
+        <div className="flex items-center justify-between px-2 py-2">
+          <div><p className="text-sm font-semibold text-text-main">Conversations</p><p className="text-[11px] text-text-muted">20 chats - kept 24 hours</p></div>
+          <button type="button" onClick={createConversation} className="flex size-8 items-center justify-center rounded-lg text-text-muted hover:bg-surface-3 hover:text-primary" aria-label="New conversation"><span className="material-symbols-outlined text-[19px]">add_comment</span></button>
         </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">Text</span>
-          <select value={textModel} onChange={(event) => setTextModel(event.target.value)} disabled={loading || !chatModels.length} className="h-9 w-[min(220px,30vw)] min-w-37.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs focus:border-primary focus:outline-none">
-            {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.alias})</option>)}
-          </select>
-          <span className="ml-1 text-xs font-semibold uppercase tracking-wider text-text-muted">Image</span>
-          <select value={imageModel} onChange={(event) => setImageModel(event.target.value)} disabled={loading || !imageModels.length} className="h-9 w-[min(220px,30vw)] min-w-37.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs focus:border-primary focus:outline-none">
-            {imageModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.alias})</option>)}
-          </select>
-          <Button variant="secondary" size="md" icon="add_comment" onClick={resetChat}>New chat</Button>
+        <div className="custom-scrollbar mt-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">{conversationButtons}</div>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="mb-2 flex gap-2 overflow-x-auto pb-1 lg:hidden">{conversationButtons}</div>
+        <div className="sticky top-14 z-20 flex flex-wrap items-end justify-between gap-3 bg-background/95 pb-3 pt-1 backdrop-blur-sm">
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight">Image Studio</h1>
+            <p className="mt-1 text-sm text-text-muted">Chats and images are saved locally for 24 hours.</p>
+          </div>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">Text</span>
+            <select value={textModel} onChange={(event) => changeTextModel(event.target.value)} disabled={loading || !chatModels.length} className="h-9 w-[min(220px,30vw)] min-w-37.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs focus:border-primary focus:outline-none">
+              {chatModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.alias})</option>)}
+            </select>
+            <span className="ml-1 text-xs font-semibold uppercase tracking-wider text-text-muted">Image</span>
+            <select value={imageModel} onChange={(event) => changeImageModel(event.target.value)} disabled={loading || !imageModels.length} className="h-9 w-[min(220px,30vw)] min-w-37.5 rounded-lg border border-border/80 bg-transparent px-2.5 text-xs focus:border-primary focus:outline-none">
+              {imageModels.map((model) => <option key={model.id} value={model.id}>{model.name} ({model.alias})</option>)}
+            </select>
+            <Button variant="secondary" size="md" icon="add_comment" onClick={createConversation}>New chat</Button>
+          </div>
         </div>
-      </div>
 
-      <div className="flex flex-1 flex-col">
-
-        <div ref={scrollRef} className={`flex flex-1 flex-col gap-5 bg-transparent px-4 pt-5 sm:px-8 ${messages.length > 0 ? references.length > 0 ? "pb-64" : "pb-40" : "pb-5"}`}>
-          {messages.length === 0 && (
-            <div className="m-auto max-w-lg text-center">
-              <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"><span className="material-symbols-outlined text-[30px]">auto_awesome</span></div>
-              <h2 className="text-xl font-semibold">What image should we make?</h2>
-              <p className="mt-2 text-sm text-text-muted">Ask a question normally, or describe an image. The assistant decides when to call the image model.</p>
-            </div>
-          )}
+        <div ref={scrollRef} className={`flex flex-1 flex-col gap-5 bg-transparent px-2 pt-5 sm:px-6 ${messages.length > 0 ? references.length > 0 ? "pb-64" : "pb-40" : "pb-5"}`}>
+          {messages.length === 0 ? <div className="m-auto max-w-lg text-center"><div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"><span className="material-symbols-outlined text-[30px]">auto_awesome</span></div><h2 className="text-xl font-semibold">What image should we make?</h2><p className="mt-2 text-sm text-text-muted">Generate here, then use “Add to chat” to reuse any result without copying base64.</p></div> : null}
           {messages.map((message) => (
             <div key={message.id} className={`flex items-start gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}>
-              {message.role === "assistant" && <div className={`${message.phase === "thinking" && !message.content ? "" : "mt-1"} flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary`}><span className="material-symbols-outlined text-[18px]">auto_awesome</span></div>}
-              <div className={`max-w-[min(840px,90%)] ${message.role === "user" ? "rounded-2xl rounded-br-md bg-primary px-4 py-3 text-white shadow-sm" : "min-w-0"}`}>
-                {message.content && (
-                  <div className={`text-sm leading-7 ${
-                    message.role === "assistant"
-                      ? "font-medium text-text-main [text-shadow:_0_1px_2px_var(--color-bg),_0_0_8px_var(--color-bg)]"
-                      : ""
-                  }`}>
-                    <MarkdownText content={message.content} />
-                  </div>
-                )}
-                {message.role === "assistant" && message.phase === "thinking" && !message.content && <p className="flex h-8 items-center text-sm text-text-muted">Thinking<span className="animate-pulse">...</span></p>}
-                {message.role === "assistant" && message.phase === "generating" && (() => {
-                  const total = message.images?.length || 0;
-                  const completed = message.images?.filter((image) => image.status === "done").length || 0;
-                  const failed = message.images?.filter((image) => image.status === "error").length || 0;
-                  return <div className="mt-3 rounded-xl border border-border-subtle bg-surface-2/60 px-3 py-2 text-xs text-text-muted">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-medium text-text-main">Generating {total} image{total === 1 ? "" : "s"}</span>
-                      <span>{completed}/{total} ready{failed ? ` - ${failed} failed` : ""}</span>
-                    </div>
-                    <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border-subtle"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${total ? (completed / total) * 100 : 0}%` }} /></div>
-                  </div>;
-                })()}
-                {message.references?.length > 0 && <div className="mt-2 flex gap-2">{message.references.map((url, index) => <button key={`${url}-${index}`} type="button" onClick={() => setPreviewImage({ src: url, prompt: message.content })} className="cursor-zoom-in rounded-lg" aria-label={`Open reference image ${index + 1}`}><img src={url} alt={`Reference ${index + 1}`} className="size-16 rounded-lg object-cover" /></button>)}</div>}
-                {message.images?.length > 0 && (() => {
+              {message.role === "assistant" ? <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><span className="material-symbols-outlined text-[18px]">auto_awesome</span></div> : null}
+              <div className={`max-w-[min(840px,92%)] ${message.role === "user" ? "rounded-2xl rounded-br-md bg-primary px-4 py-3 text-white shadow-sm" : "min-w-0"}`}>
+                {message.content ? <div className={`text-sm leading-7 ${message.role === "assistant" ? "font-medium text-text-main" : ""}`}><MarkdownText content={message.content} /></div> : null}
+                {message.role === "assistant" && message.phase === "thinking" && !message.content ? <p className="flex h-8 items-center text-sm text-text-muted">Thinking<span className="animate-pulse">...</span></p> : null}
+                {message.role === "user" && message.references?.length > 0 ? <div className="mt-2 flex gap-2">{message.references.map((url, index) => <button key={`${url}-${index}`} type="button" onClick={() => setPreviewImage({ src: url })} className="cursor-zoom-in rounded-lg"><img src={url} alt={`Reference ${index + 1}`} className="size-16 rounded-lg object-cover" /></button>)}</div> : null}
+                {message.images?.length > 0 ? (() => {
                   const activeIndex = Math.min(activeImageByMessage[message.id] || 0, message.images.length - 1);
                   const activeImage = message.images[activeIndex];
-                  const activeElapsed = activeImage.elapsedMs || 0;
                   const readyImages = message.images.filter((image) => image.status === "done" && image.src);
-                  return <div className="mt-3 flex max-w-100 gap-2 rounded-xl border border-border bg-background p-2">
+                  return <div className="mt-3 flex max-w-105 gap-2 rounded-xl bg-surface-2/55 p-2">
                     <div className="relative min-w-0 flex-1 overflow-hidden rounded-lg bg-surface-2">
-                      {activeImage.status === "done" && activeImage.src ? <button type="button" onClick={() => setPreviewImage(activeImage)} className="block w-full cursor-zoom-in" aria-label="Open image preview"><img src={activeImage.src} alt={`Generated image ${activeIndex + 1}`} className="aspect-square w-full object-contain" /></button> : activeImage.status === "error" ? <div className="flex aspect-square flex-col items-center justify-center gap-3 p-4 text-center text-xs text-red-500"><span>{activeImage.error}</span><button type="button" onClick={() => retryImage(message.id, activeImage.id)} className="inline-flex items-center gap-1 rounded-md bg-red-500 px-2.5 py-1.5 font-medium text-white hover:bg-red-600"><span className="material-symbols-outlined text-[15px]">refresh</span>Retry</button><span className="text-[11px] text-text-muted">Automatic retry exhausted{activeElapsed ? ` - ${formatDuration(activeElapsed)}` : ""}</span></div> : <ImageGeneratingPlaceholder label={`Generating image ${activeIndex + 1}`} attempt={activeImage.attempt} />}
-                      <div className="absolute left-2 top-2 flex items-center gap-1"><span className="rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white">{activeIndex + 1}/{message.images.length}</span><button type="button" title={activeImage.prompt} aria-label="Show image prompt" className="flex size-6 items-center justify-center rounded-md bg-black/60 text-white hover:bg-black/75"><span className="material-symbols-outlined text-[15px]">info</span></button></div>
-                      {readyImages.length > 1 && <button type="button" onClick={() => downloadImages(readyImages)} className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white hover:bg-black/75"><span className="material-symbols-outlined text-[15px]">download</span>Download all</button>}
-                      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2"><span className="rounded-md bg-black/60 px-2 py-1 text-[11px] text-white">{activeImage.status === "done" ? `Ready - ${formatDuration(activeElapsed)}` : activeImage.status === "error" ? "Failed" : "Generating..."}</span>{activeImage.status === "done" && activeImage.src && <a href={activeImage.src} download={`9router-image-${activeIndex + 1}.png`} className="inline-flex items-center gap-1 rounded-md bg-black/60 px-2 py-1 text-[11px] font-medium text-white hover:bg-black/75"><span className="material-symbols-outlined text-[15px]">download</span>Download</a>}</div>
+                      {activeImage.status === "done" && activeImage.src ? <button type="button" onClick={() => setPreviewImage(activeImage)} className="block w-full cursor-zoom-in"><img src={activeImage.src} alt={`Generated image ${activeIndex + 1}`} draggable onDragStart={(event) => handleImageDragStart(event, activeImage.src)} className="aspect-square w-full object-contain" /></button> : activeImage.status === "error" ? <div className="flex aspect-square flex-col items-center justify-center gap-3 p-4 text-center text-xs text-red-500"><span>{activeImage.error}</span><button type="button" onClick={() => retryImage(message.id, activeImage.id)} className="inline-flex items-center gap-1 rounded-md bg-red-500 px-2.5 py-1.5 font-medium text-white"><span className="material-symbols-outlined text-[15px]">refresh</span>Retry</button></div> : <ImageGeneratingPlaceholder label={`Generating image ${activeIndex + 1}`} attempt={activeImage.attempt} />}
+                      <div className="absolute left-2 top-2 flex items-center gap-1"><span className="rounded-md bg-black/65 px-2 py-1 text-[11px] text-white">{activeIndex + 1}/{message.images.length}</span><span title={activeImage.prompt} className="flex size-6 items-center justify-center rounded-md bg-black/65 text-white"><span className="material-symbols-outlined text-[15px]">info</span></span></div>
+                      {activeImage.status === "done" && activeImage.src ? <button type="button" onClick={() => addImageToChat(activeImage.src)} className="absolute right-2 top-2 inline-flex items-center gap-1 rounded-lg bg-primary px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-md hover:bg-brand-600"><span className="material-symbols-outlined text-[16px]">add_photo_alternate</span>Add to chat</button> : null}
+                      <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2"><span className="rounded-md bg-black/65 px-2 py-1 text-[11px] text-white">{activeImage.status === "done" ? `Ready - ${formatDuration(activeImage.elapsedMs)}` : activeImage.status === "error" ? "Failed" : "Generating..."}</span>{activeImage.src ? <a href={activeImage.src} download={`9router-image-${activeIndex + 1}.png`} className="inline-flex items-center gap-1 rounded-md bg-black/65 px-2 py-1 text-[11px] font-medium text-white"><span className="material-symbols-outlined text-[15px]">download</span>Download</a> : null}</div>
                     </div>
-                    {message.images.length > 1 && <div className="custom-scrollbar grid h-72 w-16 shrink-0 grid-cols-1 content-start gap-2 overflow-y-auto pr-1">
-                      {message.images.map((image, index) => <button key={image.id} type="button" title={image.prompt} onClick={() => setActiveImageByMessage((current) => ({ ...current, [message.id]: index }))} className={`relative overflow-hidden rounded-lg border-2 bg-surface-2 ${activeIndex === index ? "border-primary" : "border-transparent hover:border-border"}`} aria-label={`Show image ${index + 1}`}><div className="flex aspect-square items-center justify-center">{image.status === "done" && image.src ? <img src={image.src} alt="" className="h-full w-full object-cover" /> : image.status === "error" ? <span className="material-symbols-outlined text-[18px] text-red-500">error</span> : <span className="size-2 animate-pulse rounded-full bg-text-muted" />}</div><span className="absolute bottom-1 left-1 rounded bg-black/65 px-1.5 py-0.5 text-[10px] text-white">{index + 1}</span></button>)}
-                    </div>}
+                    {message.images.length > 1 ? <div className="custom-scrollbar grid h-72 w-16 shrink-0 content-start gap-2 overflow-y-auto pr-1">{message.images.map((image, index) => <button key={image.id} type="button" onClick={() => setActiveImageByMessage((current) => ({ ...current, [message.id]: index }))} className={`relative overflow-hidden rounded-lg border-2 bg-surface-2 ${activeIndex === index ? "border-primary" : "border-transparent"}`}>{image.src ? <img src={image.src} alt="" className="aspect-square w-full object-cover" /> : <span className="flex aspect-square items-center justify-center"><span className="size-2 animate-pulse rounded-full bg-text-muted" /></span>}</button>)}</div> : null}
+                    {readyImages.length > 1 ? <button type="button" onClick={() => downloadImages(readyImages)} className="sr-only">Download all</button> : null}
                   </div>;
-                })()}
-                {message.role === "assistant" && message.content && <div className="mt-2 flex items-center gap-3 text-xs text-text-muted">
-                  {message.phase === "done" && message.images?.length > 0 && <span>{message.images.filter((image) => image.status === "done").length}/{message.images.length} images ready - total {formatDuration((message.generationCompletedAt || 0) - (message.generationStartedAt || 0))}</span>}
-                  <button type="button" onClick={() => copyMessage(message)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-surface-2 hover:text-text-main" title="Copy message"><span className="material-symbols-outlined text-[15px]">{copiedMessageId === message.id ? "check" : "content_copy"}</span>{copiedMessageId === message.id ? "Copied" : "Copy"}</button>
-                </div>}
+                })() : null}
+                {message.role === "assistant" && message.content ? <div className="mt-2 flex items-center gap-3 text-xs text-text-muted"><button type="button" onClick={() => copyMessage(message)} className="inline-flex items-center gap-1 rounded-md px-2 py-1 hover:bg-surface-2 hover:text-text-main"><span className="material-symbols-outlined text-[15px]">{copiedMessageId === message.id ? "check" : "content_copy"}</span>{copiedMessageId === message.id ? "Copied" : "Copy"}</button></div> : null}
               </div>
-              {message.role === "user" && <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-text-muted"><span className="material-symbols-outlined text-[18px]">person</span></div>}
+              {message.role === "user" ? <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-xl bg-surface-2 text-text-muted"><span className="material-symbols-outlined text-[18px]">person</span></div> : null}
             </div>
           ))}
         </div>
 
-        <div className="sticky bottom-0 z-20 shrink-0 bg-transparent px-2 py-3 sm:px-4">
-          {error && <p className="pb-2 text-sm text-red-500">{error}</p>}
-          {references.length > 0 && <div className="mb-2 flex gap-2 overflow-x-auto">{references.map((url, index) => <div key={`${url}-${index}`} className="relative shrink-0 pb-1 pr-2 pt-2"><button type="button" onClick={() => setPreviewImage({ src: url, prompt: "Reference image" })} className="cursor-zoom-in rounded-lg" aria-label={`Preview reference image ${index + 1}`}><img src={url} alt={`Reference ${index + 1}`} className="size-20 rounded-lg object-cover" /></button><button type="button" aria-label="Remove reference image" onClick={() => setReferences((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-0 top-0 flex size-5 items-center justify-center rounded-full bg-black/75 text-xs text-white">x</button></div>)}</div>}
-          <div className="flex items-end gap-2 rounded-2xl border border-border/80 bg-transparent p-2 focus-within:border-primary shadow-xs">
-            <label className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-xl text-text-muted hover:bg-surface-2/60 hover:text-primary"><span className="material-symbols-outlined text-[20px]">attach_file</span><input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" /></label>
-            <textarea ref={promptInputRef} value={prompt} onChange={(event) => { const element = event.currentTarget; element.style.height = "auto"; element.style.height = `${Math.min(element.scrollHeight, 112)}px`; setPrompt(element.value); }} onPaste={handlePaste} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} rows={1} placeholder="Message Image Studio... Paste an image with Ctrl+V" className="max-h-28 min-h-9 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2 text-sm leading-6 outline-none" />
-            {sending ? <Button variant="secondary" size="md" icon="stop" onClick={() => abortRef.current?.abort()}>Stop</Button> : <Button size="md" icon="arrow_upward" onClick={sendMessage} disabled={loading || !prompt.trim() || !selectedTextModel || !selectedImageModel}>Send</Button>}
+        <div className="sticky bottom-0 z-20 shrink-0 bg-background/95 px-2 py-3 backdrop-blur-sm sm:px-4">
+          {error ? <p className="pb-2 text-sm text-red-500">{error}</p> : null}
+          {references.length > 0 ? <div className="mb-2 flex gap-2 overflow-x-auto">{references.map((url, index) => <div key={`${url}-${index}`} className="relative shrink-0 pb-1 pr-2 pt-2"><button type="button" onClick={() => setPreviewImage({ src: url })} className="cursor-zoom-in rounded-lg"><img src={url} alt={`Reference ${index + 1}`} className="size-20 rounded-lg object-cover" /></button><button type="button" aria-label="Remove reference image" onClick={() => setReferences((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-0 top-0 flex size-5 items-center justify-center rounded-full bg-black/75 text-white"><span className="material-symbols-outlined text-[14px]">close</span></button></div>)}</div> : null}
+          <div onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDrop={handleDrop} className="flex items-end gap-2 rounded-2xl border border-border/80 bg-background p-2 shadow-sm focus-within:border-primary">
+            <label className="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-xl text-text-muted hover:bg-surface-2 hover:text-primary"><span className="material-symbols-outlined text-[20px]">attach_file</span><input type="file" accept="image/*" multiple onChange={handleFiles} className="hidden" /></label>
+            <textarea ref={promptInputRef} value={prompt} onChange={(event) => { const element = event.currentTarget; element.style.height = "auto"; element.style.height = `${Math.min(element.scrollHeight, 112)}px`; setPrompt(element.value); }} onPaste={handlePaste} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); sendMessage(); } }} rows={1} placeholder="Message Image Studio..." className="max-h-28 min-h-9 flex-1 resize-none overflow-y-auto bg-transparent px-1 py-2 text-sm leading-6 outline-none" />
+            {sending ? <Button variant="secondary" size="md" icon="stop" onClick={stopJob}>Stop</Button> : <Button size="md" icon="arrow_upward" onClick={sendMessage} disabled={loading || !prompt.trim() || !selectedTextModel || !selectedImageModel}>Send</Button>}
           </div>
         </div>
       </div>
-      {previewImage?.src && <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-label="Image preview" onClick={() => setPreviewImage(null)}>
-        <div className="relative max-h-full max-w-full" onClick={(event) => event.stopPropagation()}>
-          <img src={previewImage.src} alt="Large preview" className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl" />
-          <div className="absolute right-2 top-2 flex gap-2">
-            <a href={previewImage.src} download="9router-image-preview.png" className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white hover:bg-black/85" aria-label="Download preview"><span className="material-symbols-outlined text-[18px]">download</span></a>
-            <button type="button" onClick={() => setPreviewImage(null)} className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white hover:bg-black/85" aria-label="Close preview"><span className="material-symbols-outlined text-[20px]">close</span></button>
-          </div>
-        </div>
-      </div>}
+
+      {previewImage?.src ? <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-label="Image preview" onClick={() => setPreviewImage(null)}><div className="relative max-h-full max-w-full" onClick={(event) => event.stopPropagation()}><img src={previewImage.src} alt="Large preview" draggable onDragStart={(event) => handleImageDragStart(event, previewImage.src)} className="max-h-[90vh] max-w-[90vw] rounded-xl object-contain shadow-2xl" /><div className="absolute right-2 top-2 flex gap-2"><button type="button" onClick={() => addImageToChat(previewImage.src)} className="inline-flex h-9 items-center gap-1 rounded-full bg-primary px-3 text-xs font-semibold text-white"><span className="material-symbols-outlined text-[17px]">add_photo_alternate</span>Add to chat</button><a href={previewImage.src} download="9router-image-preview.png" className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white"><span className="material-symbols-outlined text-[18px]">download</span></a><button type="button" onClick={() => setPreviewImage(null)} className="flex size-9 items-center justify-center rounded-full bg-black/65 text-white"><span className="material-symbols-outlined text-[20px]">close</span></button></div></div></div> : null}
     </div>
   );
 }

@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import { AntigravityExecutor } from "../../open-sse/executors/antigravity.js";
 import antigravity from "../../open-sse/providers/registry/antigravity.js";
+import { buildErrorBody } from "../../open-sse/utils/error.js";
 
 const MAX = 10000;
 function res(status, headers = {}, body = null) {
@@ -43,6 +44,25 @@ describe("antigravity computeRetryDelay hook (D3)", () => {
       message: "You have exhausted your capacity on this model.",
       resetsAtMs: Date.parse(resetAt),
     });
+  });
+
+  it("surfaces Google TOS_VIOLATION instead of mapping it to quota", () => {
+    const parsed = ag.parseError({ status: 403 }, JSON.stringify({
+      error: {
+        code: 403,
+        message: "This service has been disabled in this account for violation of Terms of Service.",
+        details: [{
+          reason: "TOS_VIOLATION",
+          metadata: { appeal_url: "https://forms.gle/example" },
+        }],
+      },
+    }));
+
+    expect(parsed).toEqual({
+      status: 403,
+      message: "This service has been disabled in this account for violation of Terms of Service. Appeal: https://forms.gle/example",
+    });
+    expect(buildErrorBody(parsed.status, parsed.message).error.code).toBe("permission_denied");
   });
 
   it("converts Google RetryInfo into an absolute account cooldown", () => {

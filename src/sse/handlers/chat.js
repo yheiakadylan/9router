@@ -283,6 +283,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
     if (!credentials || credentials.allRateLimited) {
       if (credentials?.allRateLimited) {
         const errorMsg = lastError || credentials.lastError || "Unavailable";
+        if (
+          provider === "antigravity" &&
+          /TOS_VIOLATION|Terms of Service|violation of Terms/i.test(errorMsg)
+        ) {
+          return errorResponse(HTTP_STATUS.FORBIDDEN, errorMsg, lastHeaders);
+        }
         const status = HTTP_STATUS.SERVICE_UNAVAILABLE;
         log.warn("CHAT", `[${provider}/${model}] ${errorMsg} (${credentials.retryAfterHuman})`);
         return unavailableResponse(status, `[${provider}/${model}] ${errorMsg}`, credentials.retryAfter, credentials.retryAfterHuman, lastHeaders);
@@ -317,6 +323,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       credentials: refreshedCredentials,
       log,
       clientRawRequest,
+      signal: request?.signal,
       connectionId: credentials.connectionId,
       userAgent,
       apiKey,
@@ -368,6 +375,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         refreshedCredentials.accessToken, credentials.providerSpecificData
       );
       if (quotaResetMs) resetsAtMs = quotaResetMs;
+    }
+
+    // A Google TOS_VIOLATION is an account policy block, not a quota cooldown.
+    // Return the upstream 403 directly so the client sees the appeal guidance.
+    if (
+      provider === "antigravity" &&
+      result.status === HTTP_STATUS.FORBIDDEN &&
+      /TOS_VIOLATION|Terms of Service|violation of Terms/i.test(result.error || "")
+    ) {
+      return result.response;
     }
 
     // Exhausted Antigravity model is blocked only in RAM cache until upstream resetAt.

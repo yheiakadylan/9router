@@ -54,6 +54,21 @@ describe("handleImageGenerationCore", () => {
     expect(result.error).toContain("does not support image generation");
   });
 
+  it("passes the caller abort signal to the provider request", async () => {
+    const controller = new AbortController();
+    global.fetch.mockResolvedValueOnce(Response.json({ created: 1, data: [{ url: "https://example.com/image.png" }] }));
+
+    await handleImageGenerationCore({
+      body: { prompt: "A cat" },
+      modelInfo: { provider: "openai", model: "dall-e-3" },
+      credentials: { apiKey: "test-key" },
+      signal: controller.signal,
+      log: null,
+    });
+
+    expect(global.fetch.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
   it("generates image with OpenAI format", async () => {
     global.fetch.mockResolvedValueOnce(
       new Response(

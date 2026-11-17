@@ -233,6 +233,9 @@ export default function BasicChatPageClient() {
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        // Keep the actual error body visible; the placeholder response otherwise
+        // makes a failed request look like a successful completion.
+        setResult({ data, latencyMs: now() - startedAt });
         throw new Error(data?.error?.message || data?.error || `HTTP ${response.status}`);
       }
 

@@ -446,6 +446,19 @@ export function parseQuotaData(provider, data) {
             });
           }
 
+          // Keep the family rows above, but also expose each tier so users can
+          // tell whether High, Medium, or Low is the exhausted mode.
+          geminiModels.forEach(([modelKey, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || modelKey,
+              modelKey,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+
           // 1b. Gemini 4 Argon Family (separate quota bucket on Pro plans):
           if (hasArgonSession) {
             summaryModels.filter(([k]) => k === "gemini_argon_session").forEach(([modelKey, quota]) => {
@@ -493,6 +506,17 @@ export function parseQuotaData(provider, data) {
             });
           }
 
+          argonModels.forEach(([modelKey, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || modelKey,
+              modelKey,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
+
           // 2. Claude & GPT Family:
           if (hasClaudeSession) {
             summaryModels.filter(([k]) => k === "claude_gpt_session").forEach(([modelKey, quota]) => {
@@ -537,6 +561,17 @@ export function parseQuotaData(provider, data) {
               });
             });
           }
+
+          claudeModels.forEach(([modelKey, quota]) => {
+            normalizedQuotas.push({
+              name: quota.displayName || modelKey,
+              modelKey,
+              used: quota.used || 0,
+              total: quota.total || 0,
+              resetAt: quota.resetAt || null,
+              remainingPercentage: quota.remainingPercentage,
+            });
+          });
 
           // 3. Standalone Image Generation Models (unique usage)
           imageModels.forEach(([modelKey, quota]) => {

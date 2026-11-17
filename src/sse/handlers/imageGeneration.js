@@ -129,7 +129,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -137,7 +137,7 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal });
 }
 
 import { saveRequestDetail } from "@/lib/requestDetailsDb";
@@ -190,7 +190,7 @@ function sanitizeImagePayload(obj) {
   return clean;
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, signal } = {}) {
   const startTime = Date.now();
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
@@ -226,6 +226,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       body,
       modelInfo: { provider, model },
       credentials: null,
+      signal,
       binaryOutput,
     });
     const durationMs = Date.now() - startTime;
@@ -303,6 +304,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       body,
       modelInfo: { provider, model },
       credentials: refreshedCredentials,
+      signal,
       streamToClient: wantsStream,
       binaryOutput,
       onCredentialsRefreshed: async (newCreds) => {

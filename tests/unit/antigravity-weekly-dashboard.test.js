@@ -127,7 +127,7 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     expect(claudeSessionIdx).toBeLessThan(claudeWeeklyIdx);
   });
 
-  it("excludes redundant duplicates when individual models mirror weekly reset and summary is present", () => {
+  it("keeps individual Gemini model rows when summary quotas are present", () => {
     // Exact scenario from Christian's account:
     const liveLikeData = {
       quotas: {
@@ -162,17 +162,14 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     const quotas = parseQuotaData("antigravity", liveLikeData);
     const names = quotas.map((q) => q.name);
 
-    // Should contain unique usages:
+    // Summary rows remain visible alongside the model-level row.
     expect(names).toContain("Claude & GPT (5h)");
     expect(names).toContain("Claude & GPT (Weekly)");
     expect(names).toContain("Gemini (Weekly)");
     expect(names).toContain("Gemini 3.1 Flash Image");
-
-    // Should NOT contain redundant duplicate entries:
-    expect(names).not.toContain("Gemini (Flash / Pro)"); // duplicate of Gemini (Weekly)
-    expect(names).not.toContain("Claude (Sonnet / Opus)"); // duplicate of Claude & GPT (5h)
-    expect(names).not.toContain("GPT-OSS 120B (Medium)"); // covered by Claude & GPT family
-    expect(quotas).toHaveLength(4);
+    expect(names).toContain("Gemini 3.8 Flash (High)");
+    expect(names).toContain("Claude 3.7 Sonnet");
+    expect(quotas).toHaveLength(6);
   });
 
   it("works with no weekly keys present (backward compat)", () => {
@@ -187,8 +184,9 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
       },
     };
     const quotas = parseQuotaData("antigravity", noWeekly);
-    expect(quotas).toHaveLength(1);
+    expect(quotas).toHaveLength(2);
     expect(quotas[0].name).toBe("Gemini (Flash / Pro)");
+    expect(quotas[1].name).toBe("Gemini 3.1 Pro (High)");
   });
 
   it("shows Gemini 4 Argon (Weekly) separately and does not contaminate Gemini (Flash / Pro) when Argon is used", () => {
@@ -269,7 +267,7 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     expect(names).toContain("Gemini (Weekly)");
     expect(names).toContain("Gemini 4 Argon (Weekly)");
     expect(names).toContain("Claude & GPT (Weekly)");
-    expect(quotas).toHaveLength(6);
+    expect(quotas).toHaveLength(9);
 
     const argonWeekly = quotas.find((q) => q.modelKey === "gemini_argon_weekly");
     expect(argonWeekly).toMatchObject({
@@ -302,12 +300,17 @@ describe("Antigravity dashboard normalization with weekly quotas", () => {
     };
 
     const quotas = parseQuotaData("antigravity", fallbackWithArgon);
-    expect(quotas.map((q) => q.modelKey)).toEqual(["gemini_argon", "gemini"]);
+    expect(quotas.map((q) => q.modelKey)).toEqual([
+      "gemini_argon",
+      "gemini-4-argon-high",
+      "gemini",
+      "gemini-3.8-flash-high",
+    ]);
     expect(quotas[0]).toMatchObject({
       name: "Gemini 4 Argon",
       remainingPercentage: 43,
     });
-    expect(quotas[1]).toMatchObject({
+    expect(quotas.find((quota) => quota.modelKey === "gemini")).toMatchObject({
       name: "Gemini (Flash / Pro)",
       remainingPercentage: 100,
     });

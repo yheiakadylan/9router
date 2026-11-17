@@ -74,6 +74,19 @@ export {
   saveRequestDetail, getRequestDetails, getRequestDetailById, getDistinctProviders,
 } from "./repos/requestDetailsRepo.js";
 
+// Image Studio (24-hour ephemeral conversations and disk-backed images)
+export {
+  cleanupImageStudio,
+  createImageStudioConversation,
+  deleteImageStudioConversation,
+  getImageStudioAsset,
+  getImageStudioAssetDataUrl,
+  getImageStudioConversation,
+  listImageStudioConversations,
+  saveImageStudioAsset,
+  updateImageStudioConversation,
+} from "./repos/imageStudioRepo.js";
+
 // Export/import full DB
 export async function exportDb() {
   const db = await getAdapter();

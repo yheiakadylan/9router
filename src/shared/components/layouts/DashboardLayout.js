@@ -34,6 +34,7 @@ function getToastStyle(type) {
 export default function DashboardLayout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const pathname = usePathname();
+  const isImageStudio = pathname === "/dashboard/image-gen";
   const notifications = useNotificationStore((state) => state.notifications);
   const removeNotification = useNotificationStore((state) => state.removeNotification);
 
@@ -109,14 +110,14 @@ export default function DashboardLayout({ children }) {
       </div>
 
       {/* Main content */}
-      <main className="flex flex-col flex-1 h-full min-w-0 relative overflow-y-auto custom-scrollbar transition-colors duration-300 isolate">
+      <main className={`flex h-full min-w-0 flex-1 flex-col isolate relative transition-colors duration-300 ${isImageStudio ? "overflow-hidden" : "custom-scrollbar overflow-y-auto"}`}>
         {/* Faint grid background */}
         <div className="landing-grid fixed inset-0 lg:left-72 pointer-events-none -z-10" aria-hidden="true" />
         <div className="sticky top-0 z-30 bg-bg/95">
           <Header key={pathname} onMenuClick={() => setSidebarOpen(true)} />
         </div>
         <div className="flex min-h-0 flex-1 p-6">
-          <div className="mx-auto min-h-full w-full max-w-7xl">{children}</div>
+          <div className={`mx-auto w-full max-w-7xl ${isImageStudio ? "h-full min-h-0" : "min-h-full"}`}>{children}</div>
         </div>
       </main>
     </div>

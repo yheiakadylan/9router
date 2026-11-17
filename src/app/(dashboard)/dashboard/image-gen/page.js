@@ -8,6 +8,7 @@ import { getProviderAlias, getProvidersByKind } from "@/shared/constants/provide
 import { isImageGenEnabled, subscribeImageGenAccess } from "@/shared/utils/imageGenAccess";
 
 const MAX_IMAGE_RETRIES = 3;
+const MESSAGE_PAGE_SIZE = 5;
 
 function createId(prefix) {
   return globalThis.crypto?.randomUUID?.() || `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -17,6 +18,16 @@ function imageSrc(value) {
   if (!value) return "";
   if (/^(data:image\/|https?:\/\/|blob:|\/api\/image-studio\/assets\/)/i.test(value)) return value;
   return `data:image/png;base64,${value}`;
+}
+
+function expiryLabel(expiresAt, now) {
+  const expiry = Date.parse(expiresAt);
+  if (!Number.isFinite(expiry)) return "Kept up to 24h";
+  const minutes = Math.max(0, Math.ceil((expiry - now) / 60_000));
+  if (minutes < 60) return `Deletes in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `Deletes in ${hours}h${remainder ? ` ${remainder}m` : ""}`;
 }
 
 function formatDuration(value) {
@@ -361,6 +372,8 @@ export default function ImageGenerationPage() {
   const [loading, setLoading] = useState(true);
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [error, setError] = useState("");
+  const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_PAGE_SIZE);
+  const [expiryNow, setExpiryNow] = useState(() => Date.now());
   const conversationsRef = useRef([]);
   const saveQueuesRef = useRef(new Map());
   const scrollRef = useRef(null);
@@ -371,6 +384,8 @@ export default function ImageGenerationPage() {
     [conversations, conversationId]
   );
   const messages = useMemo(() => activeConversation?.messages || [], [activeConversation]);
+  const visibleMessages = useMemo(() => messages.slice(-visibleMessageCount), [messages, visibleMessageCount]);
+  const hiddenMessageCount = Math.max(0, messages.length - visibleMessages.length);
   const sending = Boolean(activeJobs[conversationId]);
   const hasGeneratingConversations = conversations.some((conversation) => conversation.status === "generating");
   const selectedTextModel = useMemo(() => chatModels.find((model) => model.id === textModel), [chatModels, textModel]);
@@ -427,6 +442,11 @@ export default function ImageGenerationPage() {
   }, []);
 
   useEffect(() => subscribeImageGenAccess(setImageGenEnabled), []);
+
+  useEffect(function updateExpiryLabels() {
+    const timer = setInterval(() => setExpiryNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     if (!imageGenEnabled) router.replace("/dashboard");
@@ -519,7 +539,9 @@ export default function ImageGenerationPage() {
   }, [applyConversationPayload, hasGeneratingConversations]);
 
   useEffect(() => {
-    if (messages.length > 0) scrollRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    if (messages.length > 0) {
+      scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+    }
   }, [messages]);
 
   useEffect(() => {
@@ -542,6 +564,7 @@ export default function ImageGenerationPage() {
       if (!response.ok) throw new Error(payload.error || "Failed to create chat");
       replaceConversations((current) => [payload.conversation, ...current].slice(0, 20));
       setConversationId(payload.conversation.id);
+      setVisibleMessageCount(MESSAGE_PAGE_SIZE);
       setPrompt("");
       setReferences([]);
       setError("");
@@ -552,6 +575,7 @@ export default function ImageGenerationPage() {
 
   function selectConversation(conversation) {
     setConversationId(conversation.id);
+    setVisibleMessageCount(MESSAGE_PAGE_SIZE);
     setTextModel(conversation.textModel || textModel);
     setImageModel(conversation.imageModel || imageModel);
     setPrompt("");
@@ -741,15 +765,18 @@ export default function ImageGenerationPage() {
     <div key={conversation.id} className={`group flex min-w-48 items-center rounded-xl transition-colors ${conversation.id === conversationId ? "bg-primary/10 text-text-main" : "text-text-muted hover:bg-surface-2 hover:text-text-main"}`}>
       <button type="button" onClick={() => selectConversation(conversation)} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left">
         <ConversationStatus status={conversation.status} />
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">{conversation.title || "New image chat"}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium">{conversation.title || "New image chat"}</span>
+          <time dateTime={conversation.expiresAt} title={new Date(conversation.expiresAt).toLocaleString()} className="mt-0.5 block text-[10px] text-text-muted">{expiryLabel(conversation.expiresAt, expiryNow)}</time>
+        </span>
       </button>
       <button type="button" onClick={(event) => removeConversation(event, conversation.id)} className="mr-2 hidden size-7 items-center justify-center rounded-md opacity-60 hover:bg-red-500/10 hover:text-red-500 group-hover:flex focus:flex" aria-label="Delete conversation"><span className="material-symbols-outlined text-[16px]">delete</span></button>
     </div>
   ));
 
   return (
-    <div className="flex min-h-[calc(100vh-7rem)] gap-3">
-      <aside className="hidden w-60 shrink-0 flex-col rounded-2xl bg-surface-2/55 p-2 lg:flex">
+    <div className="flex h-full min-h-0 gap-3 overflow-hidden">
+      <aside className="hidden min-h-0 w-60 shrink-0 flex-col rounded-2xl bg-surface-2/55 p-2 lg:flex">
         <div className="flex items-center justify-between px-2 py-2">
           <div><p className="text-sm font-semibold text-text-main">Conversations</p><p className="text-[11px] text-text-muted">20 chats - kept 24 hours</p></div>
           <button type="button" onClick={createConversation} className="flex size-8 items-center justify-center rounded-lg text-text-muted hover:bg-surface-3 hover:text-primary" aria-label="New conversation"><span className="material-symbols-outlined text-[19px]">add_comment</span></button>
@@ -757,9 +784,9 @@ export default function ImageGenerationPage() {
         <div className="custom-scrollbar mt-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">{conversationButtons}</div>
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="mb-2 flex gap-2 overflow-x-auto pb-1 lg:hidden">{conversationButtons}</div>
-        <div className="sticky top-14 z-20 flex flex-wrap items-end justify-between gap-3 bg-background/95 pb-3 pt-1 backdrop-blur-sm">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="mb-2 flex shrink-0 gap-2 overflow-x-auto pb-1 lg:hidden">{conversationButtons}</div>
+        <div className="z-20 flex shrink-0 flex-wrap items-end justify-between gap-3 bg-background/95 pb-3 pt-1 backdrop-blur-sm">
           <div>
             <h1 className="text-3xl font-semibold tracking-tight">Image Studio</h1>
             <p className="mt-1 text-sm text-text-muted">Chats and images are saved locally for 24 hours.</p>
@@ -777,9 +804,10 @@ export default function ImageGenerationPage() {
           </div>
         </div>
 
-        <div ref={scrollRef} className={`flex flex-1 flex-col gap-5 bg-transparent px-2 pt-5 sm:px-6 ${messages.length > 0 ? references.length > 0 ? "pb-64" : "pb-40" : "pb-5"}`}>
+        <div ref={scrollRef} className="custom-scrollbar flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto bg-transparent px-2 pb-5 pt-5 sm:px-6">
           {messages.length === 0 ? <div className="m-auto max-w-lg text-center"><div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-primary/10 text-primary"><span className="material-symbols-outlined text-[30px]">auto_awesome</span></div><h2 className="text-xl font-semibold">What image should we make?</h2><p className="mt-2 text-sm text-text-muted">Generate here, then use “Add to chat” to reuse any result without copying base64.</p></div> : null}
-          {messages.map((message) => (
+          {hiddenMessageCount > 0 ? <button type="button" onClick={() => setVisibleMessageCount((count) => count + MESSAGE_PAGE_SIZE)} className="mx-auto inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border/80 bg-surface-2 px-3 py-2 text-xs font-medium text-text-muted hover:border-primary/40 hover:text-text-main"><span className="material-symbols-outlined text-[16px]">history</span>Show {Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount)} older · {hiddenMessageCount} hidden</button> : null}
+          {visibleMessages.map((message) => (
             <div key={message.id} className={`flex items-start gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}>
               {message.role === "assistant" ? <div className="mt-1 flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><span className="material-symbols-outlined text-[18px]">auto_awesome</span></div> : null}
               <div className={`max-w-[min(840px,92%)] ${message.role === "user" ? "rounded-2xl rounded-br-md bg-primary px-4 py-3 text-white shadow-sm" : "min-w-0"}`}>
@@ -808,7 +836,7 @@ export default function ImageGenerationPage() {
           ))}
         </div>
 
-        <div className="sticky bottom-0 z-20 shrink-0 bg-background/95 px-2 py-3 backdrop-blur-sm sm:px-4">
+        <div className="z-20 shrink-0 bg-background/95 px-2 py-3 backdrop-blur-sm sm:px-4">
           {error ? <p className="pb-2 text-sm text-red-500">{error}</p> : null}
           {references.length > 0 ? <div className="mb-2 flex gap-2 overflow-x-auto">{references.map((url, index) => <div key={`${url}-${index}`} className="relative shrink-0 pb-1 pr-2 pt-2"><button type="button" onClick={() => setPreviewImage({ src: url })} className="cursor-zoom-in rounded-lg"><img src={url} alt={`Reference ${index + 1}`} className="size-20 rounded-lg object-cover" /></button><button type="button" aria-label="Remove reference image" onClick={() => setReferences((current) => current.filter((_, itemIndex) => itemIndex !== index))} className="absolute right-0 top-0 flex size-5 items-center justify-center rounded-full bg-black/75 text-white"><span className="material-symbols-outlined text-[14px]">close</span></button></div>)}</div> : null}
           <div onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; }} onDrop={handleDrop} className="flex items-end gap-2 rounded-2xl border border-border/80 bg-background p-2 shadow-sm focus-within:border-primary">

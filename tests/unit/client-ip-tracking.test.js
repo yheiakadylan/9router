@@ -93,4 +93,20 @@ describe("Usage DB IP tracking", () => {
     expect(logs[0]).toContain("192.168.1.100");
     expect(logs[0]).toContain("Mạng nội bộ (LAN)");
   });
+
+  it("persists image request usage with client IP", async () => {
+    await db.saveRequestUsage({
+      provider: "codex",
+      model: "gpt-image-2.5-flare",
+      connectionId: "conn-image",
+      apiKey: "sk-test",
+      endpoint: "/v1/images/generations",
+      tokens: { prompt_tokens: 50, completion_tokens: 1024 },
+      ip: "14.162.1.2",
+      status: "success"
+    });
+
+    const logs = await db.getRecentLogs(10);
+    expect(logs.some(l => l.includes("14.162.1.2") && l.includes("gpt-image-2.5-flare"))).toBe(true);
+  });
 });

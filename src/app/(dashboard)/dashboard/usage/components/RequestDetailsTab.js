@@ -438,7 +438,7 @@ export default function RequestDetailsTab() {
               <div className="space-y-3 text-sm">
                 <div>
                   <span className="text-text-muted text-xs uppercase font-semibold block mb-1">Prompt Câu Lệnh</span>
-                  <p className="font-mono text-xs bg-surface p-2.5 rounded border border-border whitespace-pre-wrap break-words">
+                  <p className="font-mono text-xs bg-surface p-2.5 rounded border border-border whitespace-pre-wrap wrap-break-word">
                     {selectedDetail.request?.prompt || selectedDetail.request?.messages?.[0]?.content || "—"}
                   </p>
                 </div>

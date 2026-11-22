@@ -132,7 +132,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -140,7 +140,7 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp });
 }
 
 import { saveRequestDetail } from "@/lib/requestDetailsDb";
@@ -193,7 +193,7 @@ function sanitizeImagePayload(obj) {
   return clean;
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, signal } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, signal, clientIp } = {}) {
   const startTime = Date.now();
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
@@ -243,6 +243,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         tokens: estimatedTokens,
         status: "success",
         durationMs,
+        ip: clientIp,
       }).catch(() => {});
       saveRequestDetail({
         provider,
@@ -359,6 +360,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
             tokens: estimatedTokens,
             status: "success",
             durationMs,
+            ip: clientIp,
           }).catch(() => {});
         }
 
@@ -393,6 +395,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           tokens: estimatedTokens,
           status: "success",
           durationMs,
+          ip: clientIp,
         }).catch(() => {});
       }
       saveRequestDetail({

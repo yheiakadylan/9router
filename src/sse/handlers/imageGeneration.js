@@ -68,24 +68,28 @@ function withConnectionMetadata(response, credentials) {
 }
 
 function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, ip }) {
-  if (!usage || typeof usage !== "object") return;
-  const promptTokens = usage.prompt_tokens;
-  const completionTokens = usage.completion_tokens;
-  if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 ||
-      !Number.isSafeInteger(completionTokens) || completionTokens < 0) {
-    return;
-  }
+  try {
+    if (!usage || typeof usage !== "object") return;
+    const promptTokens = usage.prompt_tokens;
+    const completionTokens = usage.completion_tokens;
+    if (!Number.isSafeInteger(promptTokens) || promptTokens < 0 ||
+        !Number.isSafeInteger(completionTokens) || completionTokens < 0) {
+      return;
+    }
 
-  saveRequestUsage({
-    provider,
-    model,
-    connectionId: connectionId || undefined,
-    apiKey: apiKey || undefined,
-    endpoint: endpoint || null,
-    tokens: usage,
-    ip,
-    status: "success",
-  }).catch(() => {});
+    saveRequestUsage({
+      provider,
+      model,
+      connectionId: connectionId || undefined,
+      apiKey: apiKey || undefined,
+      endpoint: endpoint || null,
+      tokens: usage,
+      ip,
+      status: "success",
+    }).catch(() => {});
+  } catch {
+    // Non-blocking telemetry
+  }
 }
 
 /**
@@ -320,16 +324,20 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         });
       },
       onUsage: (usage) => {
-        reportedUsage = usage;
-        recordImageRequestUsage({
-          provider,
-          model,
-          connectionId: credentials.connectionId,
-          apiKey,
-          endpoint,
-          usage,
-          ip: clientIp,
-        });
+        try {
+          reportedUsage = usage;
+          recordImageRequestUsage({
+            provider,
+            model,
+            connectionId: credentials.connectionId,
+            apiKey,
+            endpoint,
+            usage,
+            ip: clientIp,
+          });
+        } catch {
+          // Telemetry must never interrupt the image generation response
+        }
       },
       onRequestSuccess: async () => {
         try {

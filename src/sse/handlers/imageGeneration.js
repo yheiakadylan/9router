@@ -20,7 +20,7 @@ import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
 import { randomUUID } from "node:crypto";
 import { trackPendingRequest } from "@/lib/usageDb.js";
-import { extractClientIp } from "open-sse/utils/clientDetector.js";
+import { extractClientIp, detectClientTool } from "open-sse/utils/clientDetector.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
@@ -67,7 +67,7 @@ function withConnectionMetadata(response, credentials) {
   });
 }
 
-function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, ip }) {
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, ip, clientTool, userAgent }) {
   try {
     if (!usage || typeof usage !== "object") return;
     const promptTokens = usage.prompt_tokens;
@@ -85,6 +85,13 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
       endpoint: endpoint || null,
       tokens: usage,
       ip,
+      clientTool,
+      userAgent,
+      meta: {
+        ...(ip ? { ip } : {}),
+        ...(clientTool ? { clientTool } : {}),
+        ...(userAgent ? { userAgent } : {}),
+      },
       status: "success",
     }).catch(() => {});
   } catch {
@@ -106,6 +113,9 @@ export async function handleImageGeneration(request) {
 
   const url = new URL(request.url);
   const clientIp = extractClientIp(request);
+  const clientHeaders = Object.fromEntries(request.headers.entries());
+  const clientTool = detectClientTool(clientHeaders, body);
+  const userAgent = request.headers.get("x-forwarded-user-agent") || request.headers.get("x-client-user-agent") || request.headers.get("user-agent") || "";
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
   const binaryOutput = url.searchParams.get("response_format") === "binary";
@@ -136,7 +146,7 @@ export async function handleImageGeneration(request) {
     return handleComboChat({
       body,
       models: comboModels,
-      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp }),
+      handleSingleModel: (b, m) => handleSingleModelImage(b, m, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp, clientTool, userAgent }),
       log,
       comboName: modelStr,
       comboStrategy,
@@ -144,7 +154,7 @@ export async function handleImageGeneration(request) {
     });
   }
 
-  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp });
+  return handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint: url.pathname, signal: request.signal, clientIp, clientTool, userAgent });
 }
 
 import { saveRequestDetail } from "@/lib/requestDetailsDb";
@@ -197,7 +207,7 @@ function sanitizeImagePayload(obj) {
   return clean;
 }
 
-async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, signal, clientIp } = {}) {
+async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutput, preferredConnectionId, apiKey, endpoint, signal, clientIp, clientTool, userAgent } = {}) {
   const startTime = Date.now();
   const modelInfo = await getModelInfo(modelStr);
   if (!modelInfo.provider) return errorResponse(HTTP_STATUS.BAD_REQUEST, "Invalid model format");
@@ -248,6 +258,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         status: "success",
         durationMs,
         ip: clientIp,
+        clientTool,
+        userAgent,
+        meta: {
+          ...(clientIp ? { ip: clientIp } : {}),
+          ...(clientTool ? { clientTool } : {}),
+          ...(userAgent ? { userAgent } : {}),
+        },
       }).catch(() => {});
       saveRequestDetail({
         provider,
@@ -255,6 +272,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         connectionId: null,
         status: "success",
         endpoint: "/v1/images/generations",
+        ip: clientIp,
+        clientTool,
+        userAgent,
         latency: { ttft: durationMs, total: durationMs },
         request: sanitizeImagePayload(body),
         response: sanitizeImagePayload(result.response),
@@ -267,6 +287,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       connectionId: null,
       status: "error",
       endpoint: "/v1/images/generations",
+      ip: clientIp,
+      clientTool,
+      userAgent,
       latency: { ttft: durationMs, total: durationMs },
       request: sanitizeImagePayload(body),
       response: { error: result.error },
@@ -334,6 +357,8 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
             endpoint,
             usage,
             ip: clientIp,
+            clientTool,
+            userAgent,
           });
         } catch {
           // Telemetry must never interrupt the image generation response
@@ -369,6 +394,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
             status: "success",
             durationMs,
             ip: clientIp,
+            clientTool,
+            userAgent,
+            meta: {
+              ...(clientIp ? { ip: clientIp } : {}),
+              ...(clientTool ? { clientTool } : {}),
+              ...(userAgent ? { userAgent } : {}),
+            },
           }).catch(() => {});
         }
 
@@ -378,6 +410,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           connectionId: credentials.connectionId,
           status: success ? "success" : "error",
           endpoint: "/v1/images/generations",
+          ip: clientIp,
+          clientTool,
+          userAgent,
           latency: { ttft: ttftMs, total: durationMs },
           request: sanitizeImagePayload(body),
           response: success ? sanitizeImagePayload(response) : { error },
@@ -404,6 +439,13 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           status: "success",
           durationMs,
           ip: clientIp,
+          clientTool,
+          userAgent,
+          meta: {
+            ...(clientIp ? { ip: clientIp } : {}),
+            ...(clientTool ? { clientTool } : {}),
+            ...(userAgent ? { userAgent } : {}),
+          },
         }).catch(() => {});
       }
       saveRequestDetail({
@@ -412,6 +454,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
         connectionId: credentials.connectionId,
         status: "success",
         endpoint: endpoint || "/v1/images/generations",
+        ip: clientIp,
+        clientTool,
+        userAgent,
         latency: { ttft: durationMs, total: durationMs },
         request: sanitizeImagePayload(body),
         response: sanitizeImagePayload(result.response),
@@ -425,6 +470,9 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
       connectionId: credentials.connectionId,
       status: "error",
       endpoint: "/v1/images/generations",
+      ip: clientIp,
+      clientTool,
+      userAgent,
       latency: { ttft: durationMs, total: durationMs },
       request: sanitizeImagePayload(body),
       response: { error: result.error },

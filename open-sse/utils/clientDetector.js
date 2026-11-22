@@ -72,10 +72,10 @@ export function extractClientIp(request) {
 
   const raw =
     getHeader("x-9r-real-ip") ||
-    getHeader("cf-connecting-ip") ||
-    getHeader("x-real-ip") ||
     getHeader("x-client-ip") ||
     getHeader("x-user-ip") ||
+    getHeader("cf-connecting-ip") ||
+    getHeader("x-real-ip") ||
     (getHeader("x-forwarded-for") ? String(getHeader("x-forwarded-for")).split(",")[0].trim() : null) ||
     request.socket?.remoteAddress ||
     "127.0.0.1";

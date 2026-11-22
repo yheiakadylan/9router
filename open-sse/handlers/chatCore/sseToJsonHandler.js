@@ -8,6 +8,7 @@ import { PROVIDERS } from "../../config/providers.js";
 import { buildRequestDetail, extractRequestConfig, saveUsageStats, formatDoneLine } from "./requestDetail.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
 import { extractReasoningText } from "../../translator/concerns/reasoning.js";
+import { extractClientIp, detectClientTool } from "../../utils/clientDetector.js";
 
 // Responses-API providers (e.g. codex) may emit SSE without content-type + use Responses output shape
 const isResponsesProvider = (p) => PROVIDERS[p]?.format === FORMATS.OPENAI_RESPONSES;
@@ -193,10 +194,17 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
   trackDone();
 
+  const clientIp = clientRawRequest?.ip || extractClientIp(clientRawRequest);
+  const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
+  const userAgent = clientRawRequest?.headers?.["user-agent"];
+
   const ctx = {
     provider, model, connectionId,
     request: extractRequestConfig(body, stream),
-    providerRequest: finalBody || translatedBody || null
+    providerRequest: finalBody || translatedBody || null,
+    ip: clientIp,
+    clientTool,
+    userAgent
   };
 
   // Codex/Responses API SSE path
@@ -211,7 +219,18 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
       const usage = jsonResponse.usage || {};
       appendLog({ tokens: usage, status: "200 OK" });
-      saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+      saveUsageStats({
+        provider,
+        model,
+        tokens: usage,
+        connectionId,
+        apiKey,
+        endpoint: clientRawRequest?.endpoint,
+        ip: clientIp,
+        clientTool,
+        userAgent,
+        silent: true
+      });
       if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
       // Same cache-inclusive total for the recorded detail, so the DB and the
@@ -323,7 +342,18 @@ export async function handleForcedSSEToJson({ providerResponse, sourceFormat, ta
 
     const usage = parsed.usage || {};
     appendLog({ tokens: usage, status: "200 OK" });
-    saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+    saveUsageStats({
+      provider,
+      model,
+      tokens: usage,
+      connectionId,
+      apiKey,
+      endpoint: clientRawRequest?.endpoint,
+      ip: clientIp,
+      clientTool,
+      userAgent,
+      silent: true
+    });
     if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
     const totalLatency = Date.now() - requestStartTime;

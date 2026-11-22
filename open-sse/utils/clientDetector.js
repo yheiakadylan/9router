@@ -50,6 +50,41 @@ export function detectClientTool(headers = {}, body = {}) {
 }
 
 /**
+ * Extract client IP from incoming request or headers.
+ * Resolves x-9r-real-ip (from custom-server.js), cf-connecting-ip, x-real-ip,
+ * x-forwarded-for, request.ip, socket remoteAddress, falling back to 127.0.0.1.
+ * @param {object|Request} request - NextRequest, Web Request, or object with headers
+ */
+export function extractClientIp(request) {
+  if (!request) return "127.0.0.1";
+  if (typeof request === "string") return request;
+  if (request.ip && typeof request.ip === "string") return request.ip;
+
+  const headers = request.headers;
+  const getHeader = (key) => {
+    if (!headers) return null;
+    if (typeof headers.get === "function") return headers.get(key);
+    return headers[key] || headers[key.toLowerCase()] || null;
+  };
+
+  const raw =
+    getHeader("x-9r-real-ip") ||
+    getHeader("cf-connecting-ip") ||
+    getHeader("x-real-ip") ||
+    (getHeader("x-forwarded-for") ? String(getHeader("x-forwarded-for")).split(",")[0].trim() : null) ||
+    request.socket?.remoteAddress ||
+    "127.0.0.1";
+
+  let clean = raw || "127.0.0.1";
+  if (typeof clean === "string") {
+    clean = clean.trim();
+    if (clean.startsWith("::ffff:")) clean = clean.slice(7);
+    if (clean === "::1" || clean === "localhost") clean = "127.0.0.1";
+  }
+  return clean || "127.0.0.1";
+}
+
+/**
  * Check if this CLI tool + provider pair should be passed through losslessly.
  * @param {string|null} clientTool - Result of detectClientTool()
  * @param {string} provider        - Provider ID (e.g. "claude", "gemini-cli")

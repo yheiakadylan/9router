@@ -20,6 +20,7 @@ import { handleComboChat } from "open-sse/services/combo.js";
 import * as log from "../utils/logger.js";
 import { randomUUID } from "node:crypto";
 import { trackPendingRequest } from "@/lib/usageDb.js";
+import { extractClientIp } from "open-sse/utils/clientDetector.js";
 
 // Providers that don't require credentials (noAuth)
 const NO_AUTH_PROVIDERS = new Set(["sdwebui", "comfyui", "veoaifree-web"]);
@@ -66,7 +67,7 @@ function withConnectionMetadata(response, credentials) {
   });
 }
 
-function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage }) {
+function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoint, usage, ip }) {
   if (!usage || typeof usage !== "object") return;
   const promptTokens = usage.prompt_tokens;
   const completionTokens = usage.completion_tokens;
@@ -82,6 +83,7 @@ function recordImageRequestUsage({ provider, model, connectionId, apiKey, endpoi
     apiKey: apiKey || undefined,
     endpoint: endpoint || null,
     tokens: usage,
+    ip,
     status: "success",
   }).catch(() => {});
 }
@@ -99,6 +101,7 @@ export async function handleImageGeneration(request) {
   }
 
   const url = new URL(request.url);
+  const clientIp = extractClientIp(request);
   const preferredConnectionId = request.headers.get("x-connection-id") || null;
   const wantsStream = (request.headers.get("accept") || "").includes("text/event-stream");
   const binaryOutput = url.searchParams.get("response_format") === "binary";
@@ -324,6 +327,7 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           apiKey,
           endpoint,
           usage,
+          ip: clientIp,
         });
       },
       onRequestSuccess: async () => {

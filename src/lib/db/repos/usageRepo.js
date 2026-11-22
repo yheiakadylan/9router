@@ -2,6 +2,7 @@ import { EventEmitter } from "events";
 import { getAdapter } from "../driver.js";
 import { parseJson, stringifyJson } from "../helpers/jsonCol.js";
 import { getMeta, setMeta } from "../helpers/metaStore.js";
+import { normalizeIp, getLocation, parseDevice } from "../../deviceDetector.js";
 
 function maskApiKey(key) {
   if (!key || typeof key !== "string") return null;
@@ -329,7 +330,13 @@ export async function saveRequestUsage(entry) {
     const tokens = entry.tokens || {};
     const promptTokens = tokens.prompt_tokens || tokens.input_tokens || 0;
     const completionTokens = tokens.completion_tokens || tokens.output_tokens || 0;
-    const metaObj = entry.durationMs ? { durationMs: entry.durationMs, ...(entry.meta || {}) } : (entry.meta || {});
+    const metaObj = {
+      ...(entry.durationMs ? { durationMs: entry.durationMs } : {}),
+      ...(entry.ip ? { ip: entry.ip } : {}),
+      ...(entry.clientTool ? { clientTool: entry.clientTool } : {}),
+      ...(entry.userAgent ? { userAgent: entry.userAgent } : {}),
+      ...(entry.meta || {})
+    };
 
     let inserted = false;
 
@@ -873,7 +880,7 @@ export async function getRecentLogs(limit = 200) {
   try {
     const db = await getAdapter();
     const rows = db.all(
-      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens FROM usageHistory ORDER BY id DESC LIMIT ?`,
+      `SELECT timestamp, provider, model, connectionId, promptTokens, completionTokens, status, tokens, meta, apiKey FROM usageHistory ORDER BY id DESC LIMIT ?`,
       [limit],
     );
     if (!rows.length) return [];
@@ -893,7 +900,11 @@ export async function getRecentLogs(limit = 200) {
       const tk = r.tokens ? parseJson(r.tokens, {}) : {};
       const sent = r.promptTokens ?? tk.prompt_tokens ?? "-";
       const received = r.completionTokens ?? tk.completion_tokens ?? "-";
-      return `${ts} | ${m} | ${p} | ${account} | ${sent} | ${received} | ${r.status || "-"}`;
+      const meta = r.meta ? parseJson(r.meta, {}) : {};
+      const ip = normalizeIp(meta.ip || "127.0.0.1");
+      const { deviceLabel } = parseDevice(meta.userAgent, meta.clientTool);
+      const location = getLocation(ip);
+      return `${ts} | ${m} | ${p} | ${account} | ${sent} | ${received} | ${r.status || "-"} | ${ip} | ${deviceLabel} | ${location}`;
     });
   } catch (e) {
     console.error("[usageRepo] getRecentLogs failed:", e.message);

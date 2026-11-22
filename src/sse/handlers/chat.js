@@ -28,6 +28,7 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
+import { extractClientIp } from "open-sse/utils/clientDetector.js";
 
 /**
  * Handle chat completion request
@@ -44,13 +45,17 @@ export async function handleChat(request, clientRawRequest = null) {
   }
 
   // Build clientRawRequest for logging (if not provided)
+  const clientIp = extractClientIp(request);
   if (!clientRawRequest) {
     const url = new URL(request.url);
     clientRawRequest = {
       endpoint: url.pathname,
       body,
-      headers: Object.fromEntries(request.headers.entries())
+      headers: Object.fromEntries(request.headers.entries()),
+      ip: clientIp
     };
+  } else if (!clientRawRequest.ip) {
+    clientRawRequest.ip = clientIp;
   }
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.

@@ -13,6 +13,7 @@ import { appendRequestLog, saveRequestDetail } from "@/lib/usageDb.js";
 import { decloakToolNames } from "../../utils/claudeCloaking.js";
 import { restoreToolNames } from "../../utils/opencodeFingerprint.js";
 import { ROLE, RESPONSES_ITEM } from "../../translator/schema/index.js";
+import { extractClientIp, detectClientTool } from "../../utils/clientDetector.js";
 
 /**
  * Convert an OpenAI Chat Completions non-streaming response body into the
@@ -283,8 +284,21 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
   responseBody = decloakToolNames(responseBody, toolNameMap);
 
   const usage = extractUsageFromResponse(responseBody);
+  const clientIp = clientRawRequest?.ip || extractClientIp(clientRawRequest);
+  const clientTool = detectClientTool(clientRawRequest?.headers || {}, body);
   appendLog({ tokens: usage, status: "200 OK" });
-  saveUsageStats({ provider, model, tokens: usage, connectionId, apiKey, endpoint: clientRawRequest?.endpoint, silent: true });
+  saveUsageStats({
+    provider,
+    model,
+    tokens: usage,
+    connectionId,
+    apiKey,
+    endpoint: clientRawRequest?.endpoint,
+    ip: clientIp,
+    clientTool,
+    userAgent: clientRawRequest?.headers?.["user-agent"],
+    silent: true
+  });
   if (log?.line) log.line(reqTag, "📊", formatDoneLine({ usage, latency: { total: Date.now() - requestStartTime } }));
 
   const translatedResponse = needsTranslation(targetFormat, sourceFormat)
@@ -350,7 +364,10 @@ export async function handleNonStreamingResponse({ providerResponse, provider, m
       finish_reason: translatedResponse?.choices?.[0]?.finish_reason || "unknown"
     },
     pxpipe,
-    status: "success"
+    status: "success",
+    ip: clientIp,
+    clientTool,
+    userAgent: clientRawRequest?.headers?.["user-agent"]
   }, { endpoint: clientRawRequest?.endpoint || null })).catch(err => {
     console.error("[RequestDetail] Failed to save:", err.message);
   });

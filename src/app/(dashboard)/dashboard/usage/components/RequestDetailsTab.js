@@ -8,6 +8,7 @@ import Pagination from "@/shared/components/Pagination";
 import { cn } from "@/shared/utils/cn";
 import { AI_PROVIDERS, getProviderByAlias } from "@/shared/constants/providers";
 import { getInputTokens, getOutputTokens, getCachedTokens, getCacheCreationTokens } from "./tokenDisplay";
+import { normalizeIp, getLocation, parseDevice } from "@/lib/deviceDetector";
 
 let providerNameCache = null;
 let providerNodesCache = null;
@@ -60,7 +61,7 @@ function CollapsibleSection({ title, children, defaultOpen = false, icon = null 
       <button 
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="w-full flex items-center justify-between p-3 bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors"
+        className="w-full flex items-center justify-between p-3 bg-black/2 dark:bg-white/2 hover:bg-black/4 dark:hover:bg-white/4 transition-colors"
       >
         <div className="flex items-center gap-2">
           {icon && <span className="material-symbols-outlined text-[18px] text-text-muted">{icon}</span>}
@@ -240,12 +241,13 @@ export default function RequestDetailsTab() {
 
       <Card padding="none">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[880px]">
+          <table className="w-full min-w-220">
             <thead>
               <tr className="border-b border-black/5 dark:border-white/5">
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Thời Gian</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Model Gen Ảnh</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Provider</th>
+                <th className="text-left p-4 text-sm font-semibold text-text-main">IP / Nguồn</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Trạng Thái</th>
                 <th className="text-left p-4 text-sm font-semibold text-text-main">Thời Gian Gen (s)</th>
                 <th className="text-center p-4 text-sm font-semibold text-text-main">Chi Tiết</th>
@@ -254,7 +256,7 @@ export default function RequestDetailsTab() {
             <tbody>
               {loading ? (
                 <tr>
-                  <td colSpan="6" className="p-8 text-center text-text-muted">
+                  <td colSpan="7" className="p-8 text-center text-text-muted">
                     <div className="flex items-center justify-center gap-2">
                       <span className="material-symbols-outlined animate-spin text-[20px]">progress_activity</span>
                       Đang tải...
@@ -263,7 +265,7 @@ export default function RequestDetailsTab() {
                 </tr>
               ) : details.length === 0 ? (
                 <tr>
-                  <td colSpan="6" className="p-8 text-center text-text-muted">
+                  <td colSpan="7" className="p-8 text-center text-text-muted">
                     Chưa có log gen ảnh nào được ghi nhận.
                   </td>
                 </tr>
@@ -274,18 +276,22 @@ export default function RequestDetailsTab() {
                   return (
                     <tr
                       key={`${detail.id}-${index}`}
-                      className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/[0.02] dark:hover:bg-white/[0.02] transition-colors"
+                      className="border-b border-black/5 dark:border-white/5 last:border-b-0 hover:bg-black/2 dark:hover:bg-white/2 transition-colors"
                     >
                       <td className="whitespace-nowrap p-4 text-sm text-text-main">
                         {new Date(detail.timestamp).toLocaleString()}
                       </td>
-                      <td className="max-w-[200px] truncate p-4 font-mono text-sm text-text-main" title={detail.model}>
+                      <td className="max-w-50 truncate p-4 font-mono text-sm text-text-main" title={detail.model}>
                         {detail.model}
                       </td>
-                      <td className="max-w-[140px] truncate p-4 text-sm text-text-main">
+                      <td className="max-w-35 truncate p-4 text-sm text-text-main">
                         <span className="font-medium">
                           {getProviderName(detail.provider, providerNameCache)}
                         </span>
+                      </td>
+                      <td className="whitespace-nowrap p-4 text-sm text-text-main">
+                        <div className="font-mono font-semibold">{normalizeIp(detail.ip)}</div>
+                        <div className="text-[11px] text-text-muted">{parseDevice(detail.userAgent, detail.clientTool).deviceLabel} · {getLocation(detail.ip)}</div>
                       </td>
                       <td className="p-4 text-center text-xs font-semibold">
                         <span className={cn("px-2 py-0.5 rounded", ok ? "bg-green-500/15 text-green-600" : "bg-red-500/15 text-red-600")}>
@@ -361,10 +367,34 @@ export default function RequestDetailsTab() {
               </div>
               <div>
                 <span className="text-text-muted">Thời gian hoàn thành:</span>{" "}
-                <span className="text-text-main font-mono font-bold text-primary">
+                <span className="font-mono font-bold text-primary">
                   {selectedDetail.latency?.total ? `${(selectedDetail.latency.total / 1000).toFixed(2)} giây` : "—"}
                 </span>
               </div>
+              <div>
+                <span className="text-text-muted">Địa chỉ IP:</span>{" "}
+                <span className="text-text-main font-mono font-semibold">
+                  {normalizeIp(selectedDetail.ip)}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Vị trí:</span>{" "}
+                <span className="text-text-main">
+                  {getLocation(selectedDetail.ip)}
+                </span>
+              </div>
+              <div>
+                <span className="text-text-muted">Thiết bị:</span>{" "}
+                <span className="text-text-main font-medium">
+                  {parseDevice(selectedDetail.userAgent, selectedDetail.clientTool).deviceLabel}
+                </span>
+              </div>
+              {selectedDetail.userAgent && (
+                <div className="sm:col-span-2">
+                  <span className="text-text-muted">User-Agent:</span>{" "}
+                  <span className="text-text-main font-mono text-xs break-all">{selectedDetail.userAgent}</span>
+                </div>
+              )}
               {getInputTokens(selectedDetail.tokens) > 0 && (
                 <div>
                   <span className="text-text-muted">Input Tokens:</span>{" "}
@@ -400,7 +430,7 @@ export default function RequestDetailsTab() {
             </div>
 
             {/* Prompt & Request Payload Details Card */}
-            <div className="rounded-lg border border-black/5 dark:border-white/5 p-4 bg-black/[0.02] dark:bg-white/[0.02]">
+            <div className="rounded-lg border border-black/5 dark:border-white/5 p-4 bg-black/2 dark:bg-white/2">
               <div className="flex items-center gap-2 mb-2">
                 <span className="material-symbols-outlined text-[18px] text-primary">brush</span>
                 <span className="font-semibold text-sm text-text-main">Thông Số Request Gen Ảnh</span>
@@ -423,14 +453,14 @@ export default function RequestDetailsTab() {
 
             <div className="space-y-4">
               <CollapsibleSection title="1. Client Request (Payload Gen Ảnh)" defaultOpen={true} icon="input">
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                <pre className="max-h-75 max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
                   {JSON.stringify(selectedDetail.request, null, 2)}
                 </pre>
               </CollapsibleSection>
 
               {selectedDetail.providerRequest && (
                 <CollapsibleSection title="2. Provider Request (Payload Gửi tới Provider)" icon="translate">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                  <pre className="max-h-75 max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
                     {JSON.stringify(selectedDetail.providerRequest, null, 2)}
                   </pre>
                 </CollapsibleSection>
@@ -438,7 +468,7 @@ export default function RequestDetailsTab() {
 
               {selectedDetail.providerResponse && (
                 <CollapsibleSection title="3. Provider Response (Kết quả trả về từ Provider)" icon="data_object">
-                  <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                  <pre className="max-h-75 max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
                     {typeof selectedDetail.providerResponse === 'object'
                       ? JSON.stringify(selectedDetail.providerResponse, null, 2)
                       : selectedDetail.providerResponse
@@ -448,7 +478,7 @@ export default function RequestDetailsTab() {
               )}
               
               <CollapsibleSection title="4. Client Response (Kết quả Trả cho App Client)" defaultOpen={true} icon="output">
-                <pre className="max-h-[300px] max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
+                <pre className="max-h-75 max-w-full overflow-auto rounded-lg border border-black/5 bg-black/5 p-3 font-mono text-xs text-text-main dark:border-white/5 dark:bg-white/5 sm:p-4">
                   {typeof selectedDetail.response === 'object' ? JSON.stringify(selectedDetail.response, null, 2) : (selectedDetail.response?.content || "[No content]")}
                 </pre>
               </CollapsibleSection>

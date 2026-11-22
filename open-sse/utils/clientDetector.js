@@ -32,6 +32,9 @@ export function detectClientTool(headers = {}, body = {}) {
     return "github-copilot";
   }
 
+  // VIKCOM Intelligence
+  if (xApp.includes("vikcom") || ua.includes("vikcom")) return "vikcom-intelligence";
+
   // Claude Code / Claude CLI
   if (ua.includes("claude-cli") || ua.includes("claude-code") || xApp === "cli") return "claude";
 
@@ -71,6 +74,8 @@ export function extractClientIp(request) {
     getHeader("x-9r-real-ip") ||
     getHeader("cf-connecting-ip") ||
     getHeader("x-real-ip") ||
+    getHeader("x-client-ip") ||
+    getHeader("x-user-ip") ||
     (getHeader("x-forwarded-for") ? String(getHeader("x-forwarded-for")).split(",")[0].trim() : null) ||
     request.socket?.remoteAddress ||
     "127.0.0.1";

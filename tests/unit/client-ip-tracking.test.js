@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { extractClientIp } from "../../open-sse/utils/clientDetector.js";
+import { extractClientIp, detectClientTool } from "../../open-sse/utils/clientDetector.js";
 import { normalizeIp, getLocation, parseDevice } from "../../src/lib/deviceDetector.js";
 
 describe("Device & Location detection", () => {
@@ -25,6 +25,14 @@ describe("Device & Location detection", () => {
     expect(res.os).toBe("Windows 11");
     expect(res.deviceLabel).toBe("Antigravity IDE · Windows 11");
   });
+
+  it("parses VIKCOM Intelligence with forwarded Chrome User-Agent", () => {
+    const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+    const res = parseDevice(ua, "vikcom-intelligence");
+    expect(res.app).toBe("VIKCOM Intelligence (Chrome)");
+    expect(res.os).toBe("Windows 10");
+    expect(res.deviceLabel).toBe("VIKCOM Intelligence (Chrome) · Windows 10");
+  });
 });
 
 describe("extractClientIp", () => {
@@ -41,6 +49,16 @@ describe("extractClientIp", () => {
   it("extracts from x-real-ip", () => {
     const req = { headers: { "x-real-ip": "118.69.182.5" } };
     expect(extractClientIp(req)).toBe("118.69.182.5");
+  });
+
+  it("extracts from x-client-ip", () => {
+    const req = { headers: { "x-client-ip": "14.162.1.20" } };
+    expect(extractClientIp(req)).toBe("14.162.1.20");
+  });
+
+  it("detects VIKCOM Intelligence tool identity", () => {
+    expect(detectClientTool({ "x-app": "vikcom-intelligence" })).toBe("vikcom-intelligence");
+    expect(detectClientTool({ "user-agent": "vikcom-intelligence/1.0" })).toBe("vikcom-intelligence");
   });
 
   it("extracts first ip from x-forwarded-for", () => {

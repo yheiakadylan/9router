@@ -109,8 +109,16 @@ export function parseDevice(userAgent = "", clientTool = null) {
   }
 
   // 2. Application / Client Tool Detection
-  let app = clientTool ? clientTool.toUpperCase() : "Client API";
-  if (uaLower.includes("antigravity ide") || uaLower.includes("antigravity")) {
+  const isVikcom = clientTool === "vikcom-intelligence" || clientTool === "vikcom" || uaLower.includes("vikcom");
+  let app = clientTool ? (isVikcom ? "VIKCOM Intelligence" : clientTool.toUpperCase()) : "Client API";
+  if (isVikcom) {
+    let browser = "";
+    if (uaLower.includes("edg")) browser = "Edge";
+    else if (uaLower.includes("chrome")) browser = "Chrome";
+    else if (uaLower.includes("firefox")) browser = "Firefox";
+    else if (uaLower.includes("safari") && !uaLower.includes("chrome")) browser = "Safari";
+    app = browser ? `VIKCOM Intelligence (${browser})` : "VIKCOM Intelligence";
+  } else if (uaLower.includes("antigravity ide") || uaLower.includes("antigravity")) {
     app = "Antigravity IDE";
   } else if (uaLower.includes("codex_vscode") || (uaLower.includes("codex") && uaLower.includes("vscode"))) {
     app = "Codex (VS Code)";

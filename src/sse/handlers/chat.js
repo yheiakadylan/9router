@@ -46,16 +46,20 @@ export async function handleChat(request, clientRawRequest = null) {
 
   // Build clientRawRequest for logging (if not provided)
   const clientIp = extractClientIp(request);
+  const clientUa = request.headers.get("x-forwarded-user-agent") || request.headers.get("x-client-user-agent") || request.headers.get("user-agent") || "";
   if (!clientRawRequest) {
     const url = new URL(request.url);
+    const headers = Object.fromEntries(request.headers.entries());
+    if (clientUa) headers["user-agent"] = clientUa;
     clientRawRequest = {
       endpoint: url.pathname,
       body,
-      headers: Object.fromEntries(request.headers.entries()),
+      headers,
       ip: clientIp
     };
-  } else if (!clientRawRequest.ip) {
-    clientRawRequest.ip = clientIp;
+  } else {
+    if (!clientRawRequest.ip) clientRawRequest.ip = clientIp;
+    if (clientUa && clientRawRequest.headers) clientRawRequest.headers["user-agent"] = clientUa;
   }
   // Claude Code marks a 1M-context request as `<model>[1m]`; the marker matches
   // no combo, alias or provider/model pair, so it must not reach resolution.

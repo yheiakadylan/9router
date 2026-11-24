@@ -621,6 +621,10 @@ export function parseQuotaData(provider, data) {
             else if (quotaType === "weekly") displayName = "Weekly";
             else if (quotaType === "review_session") displayName = "Review (5h)";
             else if (quotaType === "review_weekly") displayName = "Review (Weekly)";
+            else if (quotaType === "image") {
+              const hours = quota.windowMinutes ? Math.round(quota.windowMinutes / 60) : 24;
+              displayName = `Image (${hours}h)`;
+            }
 
             normalizedQuotas.push({
               name: displayName,

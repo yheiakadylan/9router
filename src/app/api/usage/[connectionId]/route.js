@@ -20,6 +20,36 @@ function isAuthExpiredMessage(usage) {
   return AUTH_EXPIRED_PATTERNS.some((p) => msg.includes(p));
 }
 
+function applyCodexImageQuota(connection, usage) {
+  if (connection?.provider !== "codex" || !usage || typeof usage !== "object") {
+    return usage;
+  }
+
+  const imageQuota = connection.providerSpecificData?.imageQuota;
+  if (!imageQuota || typeof imageQuota !== "object") {
+    return usage;
+  }
+
+  const resetMs = imageQuota.resetAt ? Date.parse(imageQuota.resetAt) : NaN;
+  const expired = Number.isFinite(resetMs) && resetMs <= Date.now();
+  const used = expired ? 0 : Math.max(0, Math.min(100, Number(imageQuota.used) || 0));
+
+  return {
+    ...usage,
+    quotas: {
+      ...(usage.quotas || {}),
+      image: {
+        used,
+        total: 100,
+        remaining: Math.max(0, 100 - used),
+        resetAt: expired ? null : (imageQuota.resetAt || null),
+        unlimited: false,
+        windowMinutes: imageQuota.windowMinutes || 1440,
+      },
+    },
+  };
+}
+
 /**
  * Refresh credentials using executor and update database
  * @param {boolean} force - Skip needsRefresh check and always attempt refresh
@@ -200,7 +230,7 @@ export async function GET(request, { params }) {
       }
     }
 
-    return Response.json(applyAntigravityRuntimeLimits(connection, usage));
+    return Response.json(applyCodexImageQuota(connection, applyAntigravityRuntimeLimits(connection, usage)));
   } catch (error) {
     const provider = connection?.provider ?? "unknown";
     console.warn(`[Usage] ${provider}: ${error.message}`);

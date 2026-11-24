@@ -364,6 +364,21 @@ async function handleSingleModelImage(body, modelStr, { wantsStream, binaryOutpu
           // Telemetry must never interrupt the image generation response
         }
       },
+      onImageQuota: async (imageQuota) => {
+        try {
+          if (!imageQuota || !credentials?.connectionId) return;
+          const nextSpecific = {
+            ...(refreshedCredentials.providerSpecificData || credentials.providerSpecificData || {}),
+            imageQuota,
+          };
+          refreshedCredentials.providerSpecificData = nextSpecific;
+          await updateProviderCredentials(credentials.connectionId, {
+            providerSpecificData: nextSpecific,
+          });
+        } catch {
+          // Non-blocking quota telemetry
+        }
+      },
       onRequestSuccess: async () => {
         try {
           await clearAccountError(credentials.connectionId, credentials, model);

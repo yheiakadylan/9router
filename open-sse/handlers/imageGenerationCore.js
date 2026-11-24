@@ -12,6 +12,49 @@ function serializeRequestBody(requestBody) {
 }
 
 /**
+ * Extract Codex image generation quota snapshot from OpenAI response headers
+ * (e.g. x-codex-active-limit: imagegen_premium, x-codex-primary-used-percent, x-codex-primary-reset-at).
+ * OpenAI does not return imagegen_premium in /backend-api/wham/usage, only on image responses.
+ * @param {Response} response
+ */
+export function extractCodexImageQuota(response) {
+  const headers = response?.headers;
+  if (!headers || typeof headers.get !== "function") return null;
+
+  const activeLimit = (headers.get("x-codex-active-limit") || "").trim().toLowerCase();
+  const usedRaw = headers.get("x-codex-primary-used-percent");
+  const resetAtRaw = headers.get("x-codex-primary-reset-at");
+  const resetAfterRaw = headers.get("x-codex-primary-reset-after-seconds");
+  const windowMinRaw = headers.get("x-codex-primary-window-minutes");
+
+  if (usedRaw === null && !resetAtRaw && !resetAfterRaw) return null;
+  if (activeLimit && !activeLimit.includes("image")) return null;
+
+  const used = Math.max(0, Math.min(100, Number(usedRaw) || 0));
+  let resetAt = null;
+  if (resetAtRaw && Number.isFinite(Number(resetAtRaw)) && Number(resetAtRaw) > 0) {
+    const num = Number(resetAtRaw);
+    resetAt = new Date(num < 1e12 ? num * 1000 : num).toISOString();
+  } else if (resetAfterRaw && Number.isFinite(Number(resetAfterRaw)) && Number(resetAfterRaw) > 0) {
+    resetAt = new Date(Date.now() + Number(resetAfterRaw) * 1000).toISOString();
+  }
+
+  const windowMinutes = Number.isFinite(Number(windowMinRaw)) && Number(windowMinRaw) > 0
+    ? Number(windowMinRaw)
+    : 1440;
+
+  return {
+    activeLimit: activeLimit || "imagegen_premium",
+    used,
+    total: 100,
+    remaining: Math.max(0, 100 - used),
+    resetAt,
+    windowMinutes,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+/**
  * Core image generation handler — orchestrator only.
  * Provider-specific URL/headers/body/parse/normalize live in `./imageProviders/{id}.js`.
  *
@@ -39,6 +82,7 @@ export async function handleImageGenerationCore({
   onRequestSuccess,
   onStreamComplete,
   onUsage,
+  onImageQuota,
 }) {
   const { provider, model } = modelInfo;
 
@@ -193,11 +237,29 @@ export async function handleImageGenerationCore({
     }
   }
 
+  const imageQuota = provider === "codex" ? extractCodexImageQuota(providerResponse) : null;
+  if (imageQuota && onImageQuota) {
+    try {
+      await onImageQuota(imageQuota);
+    } catch {
+      // Non-blocking quota persistence
+    }
+  }
+
   if (!providerResponse.ok) {
+    let executorResetsAtMs;
+    if (executor?.parseError) {
+      try {
+        const parsedErr = await parseUpstreamError(providerResponse.clone(), executor);
+        executorResetsAtMs = parsedErr?.resetsAtMs;
+      } catch {}
+    }
     const { statusCode, message } = await parseUpstreamError(providerResponse);
     const errMsg = formatProviderError(new Error(message), provider, model, statusCode);
     log?.debug?.("IMAGE", `Provider error: ${errMsg}`);
-    const result = createErrorResult(statusCode, errMsg);
+    const resolvedResetsAtMs = executorResetsAtMs
+      || (imageQuota?.resetAt ? Date.parse(imageQuota.resetAt) : undefined);
+    const result = createErrorResult(statusCode, errMsg, Number.isFinite(resolvedResetsAtMs) ? resolvedResetsAtMs : undefined);
     // Adapters can mark deterministic request errors so credentialed callers do not rotate accounts.
     if (adapter.isRequestScopedError?.(statusCode, message)) result.retryable = false;
     return result;

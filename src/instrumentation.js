@@ -11,11 +11,6 @@ export async function register() {
     if (process.env.NINEROUTER_WORKER_ROLE !== "api") {
       const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
       startModelCatalogSync();
-
-      if (process.env.NEXT_PHASE !== "phase-production-build") {
-        const { startRateLimitRecovery } = await import("@/sse/services/rateLimitRecovery.js");
-        startRateLimitRecovery();
-      }
     }
   }
 }

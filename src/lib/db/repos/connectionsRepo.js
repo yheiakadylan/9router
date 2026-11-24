@@ -13,12 +13,6 @@ const OPTIONAL_FIELDS = [
 const MODEL_LOCK_PREFIX = "modelLock_";
 
 function resetHealthStateOnActivation(existing, patch) {
-  if ((Object.hasOwn(patch, "isActive") && !Object.hasOwn(patch, "rateLimitRecovery")) || Number(patch.errorCode) === 401) {
-    patch = { ...patch, rateLimitRecovery: null };
-  }
-  if (patch.rateLimitRecovery && patch.isActive === false && existing.isActive === false && !existing.rateLimitRecovery) {
-    patch = { ...patch, rateLimitRecovery: null };
-  }
   if (patch?.testStatus !== "active") return patch;
 
   const normalized = {
@@ -266,21 +260,13 @@ export async function createProviderConnection(data) {
 }
 
 // Critical: OAuth refresh token race — atomic merge inside transaction
-export async function updateProviderConnection(id, data, { expectedRecoveryId } = {}) {
+export async function updateProviderConnection(id, data) {
   const db = await getAdapter();
   let result;
   db.transaction(() => {
     const row = db.get(`SELECT * FROM providerConnections WHERE id = ?`, [id]);
     if (!row) { result = null; return; }
     const existing = rowToConn(row);
-    if (expectedRecoveryId !== undefined && (
-      existing.rateLimitRecovery?.id !== expectedRecoveryId || existing.isActive !== false ||
-      Number(existing.errorCode) === 401 || existing.antigravityValidationRequired ||
-      (data.isActive === true && Object.entries(existing).some(([key, value]) => key.startsWith(MODEL_LOCK_PREFIX) && Date.parse(value) > Date.now()))
-    )) {
-      result = null;
-      return;
-    }
     const normalized = resetHealthStateOnActivation(existing, data);
     const merged = { ...existing, ...normalized, updatedAt: new Date().toISOString() };
     upsert(db, merged);

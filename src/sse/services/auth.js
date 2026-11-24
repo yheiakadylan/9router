@@ -1,6 +1,4 @@
-import { randomUUID } from "node:crypto";
 import { getProviderConnections, validateApiKey, updateProviderConnection, getSettings, getProxyPools } from "@/lib/localDb";
-import { RATE_LIMIT_RECOVERY_CONFIG } from "@/shared/constants/rateLimitRecovery.js";
 import { resolveConnectionProxyConfig, pickProxyPoolId } from "@/lib/network/connectionProxy";
 import { formatRetryAfter, checkFallbackError, isModelLockActive, buildModelLockUpdate, getEarliestModelLockUntil, getModelLockKey } from "open-sse/services/accountFallback.js";
 import {
@@ -320,16 +318,7 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   await updateProviderConnection(connectionId, {
     ...lockUpdate,
     ...modelErrorUpdate,
-    ...([401, 429].includes(Number(status)) ? { isActive: false } : {}),
-    ...(Number(status) === 429 && (conn?.isActive === true || conn?.rateLimitRecovery) ? {
-      rateLimitRecovery: {
-        id: randomUUID(),
-        model: lockModel,
-        nextCheckAt: new Date(Math.max(Date.now() + RATE_LIMIT_RECOVERY_CONFIG.retryDelayMs, Date.parse(Object.values(lockUpdate)[0]) || 0)).toISOString(),
-        attempts: 0,
-      },
-    } : {}),
-    ...(Number(status) === 401 ? { rateLimitRecovery: null } : {}),
+    ...(Number(status) === 401 ? { isActive: false } : {}),
     ...(validationRequired ? {
       antigravityValidationRequired: true,
       antigravityValidationUrl: validationUrl,

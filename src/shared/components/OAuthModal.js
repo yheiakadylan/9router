@@ -363,6 +363,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
       const isLoopbackHost = typeof window !== "undefined" &&
         (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
       const isGoogleDesktop = provider === "antigravity" || provider === "gemini-cli";
+      const isClaude = provider === "claude";
 
       const appPort = window.location.port || (window.location.protocol === "https:" ? "443" : "80");
       let redirectUri;
@@ -370,6 +371,12 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         redirectUri = "http://localhost:1455/auth/callback";
       } else if (provider === "xai") {
         redirectUri = "http://127.0.0.1:56121/callback";
+      } else if (isClaude && !isLoopbackHost) {
+        // Claude's OAuth client rejects remote origins (domains, public IPs, reverse proxies)
+        // with "Redirect URI ... is not supported by client".
+        // Using Anthropic's official code callback URL displays the authentication code
+        // (`code#state`) for the user to copy and paste back into this modal.
+        redirectUri = "https://platform.claude.com/oauth/code/callback";
       } else if (isGoogleDesktop && !isLoopbackHost) {
         // Google Desktop OAuth clients (Antigravity & Gemini CLI) strictly reject remote origins
         // (domains, public IPs, reverse proxies) with redirect_uri_mismatch.
@@ -760,6 +767,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
         throw new Error(
           provider === "xai"
             ? "Paste the callback URL or copied xAI code"
+            : provider === "claude"
+              ? "No authorization code found. Paste the authentication code or full callback URL from Claude."
             : (provider === "antigravity" || provider === "gemini-cli")
               ? "No authorization code found. Paste the full redirected URL or code from Google."
             : provider === "kimchi"
@@ -786,6 +795,7 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
   if (!provider || !providerInfo) return null;
   const isXaiProvider = provider === "xai";
   const isKimchiProvider = provider === "kimchi";
+  const isClaudeProvider = provider === "claude";
   const isGoogleDesktopProvider = provider === "antigravity" || provider === "gemini-cli";
   const deviceLoginUrl = deviceData?.verification_uri_complete || deviceData?.verification_uri || "";
   const modalTitle = isXaiProvider ? "Connect Grok Build OAuth" : `Connect ${providerInfo.name}`;
@@ -793,6 +803,8 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
     ? "http://127.0.0.1:56121/callback?code=... or copied code"
     : provider === "codex"
       ? "http://localhost:1455/auth/callback?code=...&state=..."
+    : isClaudeProvider && !isLocalhost
+      ? "Paste authentication code (code#state) or callback URL"
     : isGoogleDesktopProvider
       ? "http://localhost:8080/callback?code=... or authorization code"
     : isKimchiProvider
@@ -914,11 +926,13 @@ export default function OAuthModal({ isOpen, provider, providerInfo, onSuccess, 
 
               <div>
                 <p className="text-sm font-medium mb-2">
-                  Step 2: Paste the {provider === "xai" ? "callback URL or copied code" : isKimchiProvider ? "callback URL or copied token" : "callback URL"} here
+                  Step 2: Paste the {provider === "xai" ? "callback URL or copied code" : isClaudeProvider && !isLocalhost ? "authentication code or callback URL" : isKimchiProvider ? "callback URL or copied token" : "callback URL"} here
                 </p>
                 <p className="text-xs text-text-muted mb-2">
                   {provider === "xai"
                     ? "If xAI shows a code instead of redirecting, paste that code here."
+                    : isClaudeProvider && !isLocalhost
+                      ? "After authorizing in Claude, copy the authentication code shown on the page (or the full callback URL) and paste it here."
                     : isGoogleDesktopProvider
                       ? "After Google sign-in, copy the redirected URL from your browser address bar (or authorization code) and paste here."
                     : isKimchiProvider
